@@ -5,61 +5,165 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Self-auditing trading agent</title>
 <style>
-  :root { --bg:#faf9f7; --fg:#1c1b19; --muted:#6b6862; --line:#e2ded7;
-          --promoted:#0a7c3a; --rejected:#a23b2c; --card:#fff; --accent:#1a4f8a;
-          --retired:#8a6d1a; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  header { padding:20px 24px; border-bottom:1px solid var(--line); background:var(--card); }
-  h1 { margin:0 0 8px; font-size:18px; }
-  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
-       margin:0 0 12px; }
-  .sub { color:var(--muted); font-size:13px; }
-  .lede { max-width:70ch; font-size:14px; line-height:1.6; margin:0 0 10px; }
-  .lede p { margin:0 0 8px; }
-  main { max-width:1040px; margin:0 auto; padding:24px; }
-  section { background:var(--card); border:1px solid var(--line); border-radius:8px;
-            padding:20px; margin-bottom:20px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line);
-          vertical-align:top; }
-  th { color:var(--muted); font-weight:600; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px;
-          font-weight:700; letter-spacing:.03em; }
-  .PROMOTED,.promoted { background:#e4f4ea; color:var(--promoted); }
-  .REJECTED,.rejected { background:#f7e6e3; color:var(--rejected); }
-  .RETIRED,.retired { background:#f4ecd8; color:var(--retired); }
-  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
-  button { font:inherit; font-weight:600; padding:8px 16px; border:1px solid var(--accent);
-           background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  #cycleStatus { margin-left:12px; color:var(--muted); }
-  .legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:12px; }
-  .legend span::before { content:""; display:inline-block; width:10px; height:10px;
-    border-radius:2px; margin-right:5px; background:var(--c); vertical-align:middle; }
-  .run-block { margin-bottom:18px; }
-  .run-block > .sub { margin-bottom:6px; }
-  .overflow { overflow-x:auto; }
-  .empty { color:var(--muted); font-style:italic; }
-  a { color:var(--accent); }
-  .bias-num { font-size:34px; font-weight:800; letter-spacing:-.01em; margin:2px 0; }
-  .bias-pos { color:var(--promoted); } .bias-neg { color:var(--rejected); }
-  .bias-row { display:flex; gap:32px; flex-wrap:wrap; align-items:baseline; }
-  .bias-side { font-size:13px; color:var(--muted); }
-  .bias-side b { font-size:18px; color:var(--fg); font-weight:700; display:block; }
-  .note { background:#f4f2ee; border-left:3px solid var(--line); padding:8px 12px;
-          font-size:12px; color:var(--muted); margin-top:12px; border-radius:0 4px 4px 0; }
-  .pm { white-space:pre-wrap; font-size:13px; background:#f7f6f3; border-radius:6px;
-        padding:12px; margin-top:8px; }
-  details.earlier { margin-top:4px; }
-  details.earlier > summary { cursor:pointer; font-size:13px; color:var(--accent);
-    font-weight:600; padding:6px 0; list-style:revert; }
-  details.earlier[open] > summary { margin-bottom:12px; }
+  :root {
+    --paper:#faf9f7; --paper-2:#f2f0eb; --card:#ffffff;
+    --fg:#1c1b19; --fg-2:#47443f; --muted:#75726b;
+    --line:#e6e2da; --line-2:#d8d2c7;
+    --accent:#1a4f8a; --accent-tint:#eef2f8; --accent-deep:#153f6f;
+    --promoted:#0a7c3a; --rejected:#a23b2c; --retired:#8a6d1a;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Code",Menlo,Consolas,monospace;
+    --maxw:1000px;
+    --s--1:.8125rem;  /* 13 */
+    --s-0:.9375rem;   /* 15 */
+    --s-1:1.0625rem;  /* 17 */
+  }
+  *,*::before,*::after { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; background:var(--paper); color:var(--fg);
+         font:var(--s-0)/1.62 var(--sans); }
+
+  /* ---- header ------------------------------------------------------------ */
+  header { background:var(--card); border-top:3px solid var(--accent);
+           border-bottom:1px solid var(--line); padding:34px 24px 26px; }
+  .header-inner { max-width:var(--maxw); margin:0 auto; }
+  h1 { margin:0 0 14px; font-weight:700; letter-spacing:-.022em; line-height:1.12;
+       font-size:clamp(1.75rem, 1.25rem + 2.3vw, 2.5rem); }
+  .lede { max-width:64ch; margin:0; color:var(--fg-2); font-size:var(--s-0); line-height:1.6; }
+  .lede p { margin:0 0 10px; }
+  .lede p:last-child { margin:0; }
+  #healthLine { margin-top:20px; font-family:var(--mono); font-size:.72rem;
+                letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+  #healthLine::before { content:"● "; color:var(--accent); }
+
+  /* ---- layout & section rhythm ----------------------------------------- */
+  main { max-width:var(--maxw); margin:0 auto; padding:48px 24px 76px; }
+  section { margin:0 0 60px; }
+  section:last-child { margin:0; }
+
+  h2 { margin:0 0 18px; padding-bottom:8px; border-bottom:1px solid var(--line-2);
+       font-size:var(--s--1); font-weight:700; text-transform:uppercase;
+       letter-spacing:.09em; color:var(--accent); }
+
+  .sub { color:var(--muted); font-size:var(--s--1); line-height:1.55; }
+  .sub strong { color:var(--fg); font-weight:600; }
+  .empty { color:var(--muted); font-style:italic; font-size:var(--s--1); }
+  a { color:var(--accent); text-underline-offset:2px; }
+  a:hover { text-decoration-thickness:2px; }
+
+  /* ---- retirement case study — the signature artifact ------------------ */
+  #retireSection { background:var(--card); border:1px solid var(--line-2);
+                   border-left:3px solid var(--accent); border-radius:8px;
+                   padding:26px 28px 28px;
+                   box-shadow:0 1px 2px rgba(20,25,35,.04), 0 14px 34px -18px rgba(20,25,35,.22); }
+  #retireSection h2 { border-bottom:1px solid var(--line); color:var(--fg);
+                      font-size:var(--s-1); font-weight:700; text-transform:none;
+                      letter-spacing:-.01em; padding-bottom:12px; margin-bottom:16px; }
+  .run-block { margin-bottom:22px; }
+  .run-block:last-child { margin-bottom:0; }
+  .pm { white-space:pre-wrap; font-family:var(--mono); font-size:.8125rem; line-height:1.62;
+        color:var(--fg-2); background:var(--paper-2); border-left:2px solid var(--line-2);
+        border-radius:0 6px 6px 0; padding:14px 16px; margin-top:12px; overflow-x:auto; }
+
+  /* ---- selection-bias instrument panel -------------------------------- */
+  #biasSection { background:var(--card); border:1px solid var(--line-2);
+                 border-radius:8px; padding:24px 26px 26px; }
+  .bias-row { display:flex; gap:38px; flex-wrap:wrap; align-items:baseline; margin-bottom:2px; }
+  .bias-num { font-family:var(--mono); font-weight:600; line-height:1; letter-spacing:-.02em;
+              font-variant-numeric:tabular-nums; color:var(--fg); margin:0 0 8px;
+              font-size:clamp(1.9rem, 1.4rem + 1.9vw, 2.5rem); }
+  .bias-num.bias-pos, .bias-num.bias-neg { color:var(--fg); }
+  .bias-row > div:first-child .bias-side { max-width:36ch; font-size:var(--s-0);
+                                           color:var(--fg); font-weight:500; line-height:1.5; }
+  .bias-side { font-size:var(--s--1); color:var(--muted); }
+  .bias-side b { display:block; font-family:var(--mono); font-variant-numeric:tabular-nums;
+                 font-size:1.05rem; font-weight:600; color:var(--fg); margin-bottom:2px; }
+
+  .note { background:var(--paper-2); border-left:2px solid var(--accent);
+          border-radius:0 6px 6px 0; padding:12px 16px; margin-top:16px;
+          font-size:var(--s--1); line-height:1.6; color:var(--fg-2); }
+  .note:empty { display:none; }
+  .note b { color:var(--fg); font-weight:600; }
+
+  /* ---- forward-tracking figure --------------------------------------- */
+  #hero { display:block; background:var(--card); border:1px solid var(--line);
+          border-radius:8px; padding:14px 14px 6px; }
+  #hero .empty { display:block; padding:22px 4px; }
+  .legend { display:flex; flex-wrap:wrap; gap:9px 18px; margin-top:14px;
+            font-size:.72rem; color:var(--muted); }
+  .legend span { display:inline-flex; align-items:center; }
+  .legend span::before { content:""; width:15px; height:3px; border-radius:2px;
+    margin-right:6px; background:var(--c,var(--accent)); }
+
+  /* ---- tables ------------------------------------------------------- */
+  .overflow { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .overflow:has(table) { border:1px solid var(--line); border-radius:8px; }
+  table { width:100%; border-collapse:collapse; font-size:var(--s--1); }
+  th,td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--line);
+          vertical-align:top; line-height:1.45; }
+  thead th, table tr:first-child th { color:var(--muted); font-weight:600;
+    font-size:.6875rem; text-transform:uppercase; letter-spacing:.06em;
+    background:#f6f4f0; border-bottom:1.5px solid var(--line-2); white-space:nowrap; }
+  tbody tr:last-child td, table tr:last-child td { border-bottom:0; }
+  table tr:hover td { background:var(--accent-tint); }
+  td .sub { font-size:.8125rem; }
+
+  /* numeric columns: tabular figures, right-aligned */
+  #decisionLog table th:nth-child(3), #decisionLog table td:nth-child(3) { text-align:right; }
+  #decisionLog table td:nth-child(3) { font-family:var(--mono); font-size:.75rem;
+    font-variant-numeric:tabular-nums; color:var(--fg-2); white-space:nowrap; }
+  #decisionLog table th:nth-child(2), #decisionLog table td:nth-child(2) { white-space:nowrap; }
+  #decisionLog table td:nth-child(2) .pill { min-width:6rem; text-align:center; }
+  #decisionLog table td:nth-child(4) { min-width:15rem; color:var(--fg-2); }
+  #ordersTable table th:first-child, #ordersTable table td:first-child {
+    text-align:right; width:3rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+  /* decision-log run header — instrument readout */
+  .run-block > .sub:first-child { font-family:var(--mono); font-size:.72rem;
+    text-transform:uppercase; letter-spacing:.04em; color:var(--muted);
+    margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed var(--line); }
+  .run-block > .sub:first-child strong { color:var(--fg); }
+
+  /* ---- verdict pills — green/red/amber carry meaning; nothing else does */
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.6875rem;
+          font-weight:700; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap;
+          background:var(--paper-2); color:var(--fg-2); border:1px solid var(--line-2); }
+  .pill.promoted,.pill.PROMOTED { background:#e6f4ec; color:var(--promoted); border-color:#bfe2cd; }
+  .pill.rejected,.pill.REJECTED { background:#f8e8e5; color:var(--rejected); border-color:#e8c9c2; }
+  .pill.retired,.pill.RETIRED  { background:#f5edda; color:var(--retired);  border-color:#e4d6ae; }
+  .mono { font-family:var(--mono); font-size:.75rem; font-variant-numeric:tabular-nums; }
+
+  /* ---- controls ---------------------------------------------------- */
+  button { font:600 var(--s--1)/1 var(--sans); padding:11px 20px; border:1px solid var(--accent);
+           background:var(--accent); color:#fff; border-radius:7px; cursor:pointer;
+           transition:background .15s ease; }
+  button:hover:not(:disabled) { background:var(--accent-deep); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  #cycleStatus { margin-left:14px; font-family:var(--mono); font-size:var(--s--1); color:var(--muted); }
+
+  details.earlier { margin-top:18px; border-top:1px solid var(--line); }
+  details.earlier > summary { cursor:pointer; font-size:var(--s--1); color:var(--accent);
+    font-weight:600; padding:10px 0 0; list-style:revert; }
+  details.earlier[open] > summary { margin-bottom:16px; }
+
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:2px; }
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
+
+  @media (max-width:640px) {
+    body { font-size:14px; }
+    header { padding:24px 18px 20px; }
+    main { padding:34px 18px 56px; }
+    section { margin-bottom:44px; }
+    #retireSection { padding:20px 18px; }
+    #biasSection { padding:18px 16px; }
+    .bias-row { gap:22px; }
+    th,td { padding:9px 11px; }
+  }
 </style>
 </head>
 <body>
 <header>
+  <div class="header-inner">
   <h1>Self-auditing trading agent</h1>
   <div class="lede">
     <p>This agent writes candidate trading strategies, backtests each one on historical
@@ -73,6 +177,7 @@
       trading only.</p>
   </div>
   <div class="sub" id="healthLine">loading…</div>
+  </div>
 </header>
 <main>
 

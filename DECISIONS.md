@@ -486,3 +486,28 @@ instrument exists, not that the gate is proven to select signal (D9/D10).
 *Rejected:* changing the stored reason format or adding a display field to the
 API (the constraint was presentation-only); a JS framework or build step for the
 collapse (a native `<details>` does it).
+
+
+### D42 — Dashboard visual pass: type scale, one accent, framed data, case-file card
+
+`static/index.html` styling only — no markup logic, no API, no copy, no JS
+behaviour changed (the humanise transform and every `id`/class the JS emits are
+untouched). What changed: (1) a real type scale — one system stack, a clamped
+display title that dominates, section headings demoted to tracked accent
+eyebrows over a hairline rule; (2) section boxes removed, replaced by 60px
+vertical rhythm so ideas separate without reading; (3) a single navy accent
+(`#1a4f8a`, matching the chart's existing pick colour) used only for headings,
+rules, links, the button and focus rings — green/red/amber now appear *only* on
+verdict pills; (4) tables get tabular figures, right-aligned numeric columns, a
+fixed-width centred verdict column, row-hover, and each sits in its own
+rounded frame that scrolls horizontally on mobile instead of overflowing the
+page; (5) the retirement case study is the one elevated card — soft shadow,
+accent spine, larger heading — so it reads as "the story"; (6) the
+selection-bias figure is now neutral ink (it is an instrument, not a verdict —
+green/red would misread it), its caption promoted to 15px medium and the honest
+"too small to conclude" note made body-legible, inverting the old
+shout/whisper.
+*Rejected:* a webfont for display personality (no-dependency constraint — the
+concept is instead "sans for the agent's prose, mono for its evidence");
+keeping uniform section cards (no hierarchy); recolouring the chart lines in JS
+(logic left untouched; the primary pick line is already the accent).
