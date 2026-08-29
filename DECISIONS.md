@@ -82,3 +82,90 @@ that was never actually closed.
 un-exited position satisfy a trade-count threshold).
 *Note:* on the current AAPL SMA(10/30) run the strategy happens to end flat,
 so this changes no numbers today — it removes a latent way to game the gate.
+
+### D12 — `skeleton.py` is frozen as the regression oracle
+Phase 1 split the skeleton into `schema.py` / `data.py` / `engine.py` without
+touching `skeleton.py`. It stays in the repo, untested-against-network, purely
+as the reference implementation. `test_engine.py::test_regression...` runs both
+`skeleton.backtest` and `engine.run_backtest` on the same committed bar fixture
+and asserts key-for-key equality. Porting surfaced **no bugs** in the skeleton —
+today's numbers (3.84% / 10.78% / 3 trades) were correct.
+*Rejected:* deleting the skeleton once modules existed (loses the oracle).
+
+### D13 — Regression fixture is a committed JSON snapshot, not a live fetch
+`tests/fixtures/aapl_daily_2026-08-29.json` holds the 250 AAPL daily bars the
+skeleton fetched on 2026-08-29. The regression test reads this file, so it is
+deterministic, offline, and stable as "now" moves past the hackathon.
+*Rejected:* fetching AAPL in the test (non-deterministic, needs network and
+keys in CI, and the reference numbers drift every day).
+
+### D14 — `data.py` caches queried *ranges*, not just bars
+A `bar_coverage` table records which `(symbol, timeframe, [start,end])` windows
+have been requested. Without it, weekends/holidays (no row) would look like
+cache misses forever and re-trigger fetches. A repeat call whose range is
+fully covered makes zero network calls; a partial-overlap call fetches only
+the uncovered sub-range(s). The single network entry point is
+`data._fetch_from_alpaca`, which tests monkeypatch.
+*Rejected:* inferring coverage from min/max cached bar dates (breaks on gaps
+at the edges of a request).
+
+### D15 — Engine indicators computed generically; only SMA has an oracle
+`engine.run_backtest` dispatches on the `IndicatorName` enum. SMA/EMA/RSI/ATR/
+MOMENTUM/VOLUME_AVG are all implemented (EMA seeded with the first-N SMA, RSI
+and ATR with Wilder smoothing, MOMENTUM as percent change, VOLUME_AVG as an
+SMA of volume). Only SMA is validated against `skeleton.py`; the others match
+the grammar but have no reference implementation yet. A missing OHLC/volume
+field raises a clear `ValueError` rather than guessing.
+*Rejected:* implementing only SMA now (engine must not be hardcoded per D3 /
+CLAUDE.md) — and hiding the others behind `NotImplementedError` (they're small
+and standard).
+
+### D16 — Insufficient indicator history evaluates a rule to False
+Matching `skeleton.py`'s `None not in (...)` guard: if any indicator a
+condition needs has too few bars (including the bar-before-first for a
+crossover), that condition is False and no signal fires. This keeps the warm-up
+period behaviour identical to the skeleton.
+
+### D17 — `test_conn.py` / `test_data.py` moved to `scripts/`, `pytest.ini` deleted
+The two root-level scripts were manual connectivity probes (they hit the network
+on import), not tests — and `tests/test_data.py` already exists, so the name
+collision was a trap. They are now `scripts/check_connection.py` /
+`scripts/check_data.py`. With no `test_*.py` left at the root, the `testpaths =
+tests` guard in `pytest.ini` had nothing left to exclude, so the file is gone.
+*Rejected:* keeping the scripts as `test_*` with a pytest-ignore rule (fragile).
+
+### D18 — One SQLite file; plain `sqlite3`; Phase 4 attaches without a migration
+`db.py` uses the same file as `data.py`'s bar cache (`bars_cache.db`) and the
+stdlib `sqlite3` only (no ORM, per CLAUDE.md). Tables: `strategies`, `runs`,
+`backtests`, `decisions`. Shadow tracking (Phase 4) needs no new DDL: a rejected
+candidate is a `strategies` row (`status='rejected'`) with its curve in
+`backtests`; a forward shadow replay is another `backtests` row (later `run_id`,
+later `bars_end`); a retirement is `status='retired'` + a `decisions` row with
+`outcome='retired'`. The `status` and `outcome` CHECK constraints already list
+those values.
+*Rejected:* a separate `shadows` table now (premature — Phase 4 may want a
+different shape), and inferring "covered" state without explicit columns.
+
+### D19 — Strategy generation uses OpenAI `gpt-4o-mini`, not the Anthropic API
+T2.1 as written said "via the Anthropic API"; the build uses OpenAI
+`gpt-4o-mini` (`generator.MODEL`, one constant) reading `OPENAI_API_KEY` from
+`.env`. Reason: that is the key the operator supplied. The choice is provider-
+agnostic in spirit — the model only ever emits grammar-constrained JSON (D3),
+never code, so the provider is not load-bearing. `MODEL` is a single string to
+change if we swap back.
+*Rejected:* Anthropic `claude-*` (original task text) — no key available.
+*Note:* CLAUDE.md's "Stack" section never named an LLM provider, so nothing
+there is contradicted.
+
+### D20 — Retries recover invalid output only; dedup by canonical hash
+`generator.generate()` retries (max 2) **only** to fix items that failed Pydantic
+validation — each is fed back with its specific error. If the model simply
+returns fewer *unique* strategies than asked, we keep what we got rather than
+churn the API for the count. Deduplication is a SHA-256 over a canonical form
+(symbol + entry/exit rules, with the two conditions of an AND/OR rule sorted so
+operand order can't fake a new strategy; name and rationale excluded), stored as
+`strategies.dedup_key` under a partial `UNIQUE` index (NULL for manual entries).
+`insert_strategy` returns the existing id on a key hit, so re-running generation
+never duplicates rows.
+*Rejected:* retrying to top up the count (scope creep, burns tokens); comparing
+full JSON (defeated by reordering and by name/rationale differences).

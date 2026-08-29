@@ -1,0 +1,5 @@
+alpaca-py==0.44.0
+openai==3.6.0
+pydantic==2.13.5
+python-dotenv==1.2.3
+pytest==9.1.1

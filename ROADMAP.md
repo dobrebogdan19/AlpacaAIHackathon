@@ -27,33 +27,59 @@ One ugly file that runs end to end. No LLM, no UI, no scheduler.
 
 Split the skeleton into modules. Behaviour must not change.
 
-- [ ] **T1.1** `schema.py` — Pydantic models for the strategy grammar
+- [x] **T1.1** `schema.py` — Pydantic models for the strategy grammar
       (indicators, operators, conditions, full Strategy object).
       *Accept:* an invalid strategy raises a clear validation error.
-- [ ] **T1.2** `data.py` — fetch daily bars, cache in SQLite, serve from
+      `tests/test_schema.py`: 11 tests (unknown indicator, bad period,
+      identical entry/exit, join rules) pass.
+- [x] **T1.2** `data.py` — fetch daily bars, cache in SQLite, serve from
       cache on repeat calls.
       *Accept:* second call for the same range makes zero network requests.
-- [ ] **T1.3** `engine.py` — the replay engine. Takes a Strategy + bars,
+      `tests/test_data.py::test_repeat_call_makes_zero_network_requests` and
+      `::test_partial_overlap_fetches_only_the_missing_range` pass.
+- [x] **T1.3** `engine.py` — the replay engine. Takes a Strategy + bars,
       returns metrics (total return, max drawdown, trade count, win rate,
       equity curve).
       *Accept:* same numbers as `skeleton.py` on the same input.
-- [ ] **T1.4** Tests for the engine — specifically one that would FAIL if
+      `tests/test_engine.py::test_regression_matches_skeleton_numbers_on_aapl`
+      passes: 3.84% / 10.78% / 3 trades, and key-for-key parity with
+      `skeleton.backtest` on the same bars.
+- [x] **T1.4** Tests for the engine — specifically one that would FAIL if
       execution happened on the decision bar instead of the next open.
       *Accept:* 3-4 tests pass; the lookahead test is explicit and named.
-- [ ] **T1.5** `db.py` — tables for strategies, runs, decisions, shadows.
+      `test_execution_uses_next_bar_open_not_decision_close` (+ final-bar-drop,
+      terminal-open-position, round-trip). Lookahead check verified to fail
+      (+400% vs 0%) if execution uses the decision bar's close.
+- [x] **T1.5** `db.py` — tables for strategies, runs, decisions, shadows.
       *Accept:* schema created on startup, idempotent.
+      `tests/test_db.py`: 9 tests. `connect()` runs `CREATE TABLE IF NOT EXISTS`
+      x4 (strategies/runs/backtests/decisions) on every open; a second `connect()`
+      + explicit `init_db()` neither errors nor wipes rows. Phase-4 values
+      (status `retired`, decision outcome `retired`) already fit — no migration.
+      Same DB file as `data.py` (`bars_cache.db`).
 
 ---
 
 ## Phase 2 — Hypothesis generation
 
-- [ ] **T2.1** LLM call that emits strategies conforming to `schema.py`.
+- [x] **T2.1** LLM call that emits strategies conforming to `schema.py`.
       *Accept:* 5 valid strategies from one call.
-- [ ] **T2.2** Validation retry loop — invalid output is fed back with the
+      `generator.py` — OpenAI `gpt-4o-mini` (see D18), grammar embedded as an
+      explicit contract built from the schema enums, JSON-only response.
+      `scripts/generate_demo.py` produced 5 valid strategies in one call
+      (attempts=1, 0 failures, 0 dupes) on 2026-08-29.
+- [x] **T2.2** Validation retry loop — invalid output is fed back with the
       error and regenerated, max 2 retries.
       *Accept:* a deliberately broken response recovers automatically.
-- [ ] **T2.3** Deduplication — near-identical strategies are collapsed.
+      `test_generator.py::test_invalid_item_is_fed_back_and_recovered` (broken
+      period 999 → retry carries "period ... 250" → 5 valid) and
+      `::test_gives_up_after_max_retries_and_logs` (3 attempts, leftover logged).
+- [x] **T2.3** Deduplication — near-identical strategies are collapsed.
       *Accept:* generating twice does not fill the DB with duplicates.
+      `dedup_key()` = SHA-256 of the canonical form (symbol + entry/exit rules,
+      condition order within a rule sorted away; name/rationale excluded).
+      `test_near_identical_strategies_collapse` (reordered AND-conditions → 1)
+      and `test_generating_twice_does_not_duplicate_in_db` (5, not 10).
 
 ---
 
