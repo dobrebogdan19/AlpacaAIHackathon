@@ -195,16 +195,18 @@ SVG (D29). Served at `/` by `api.py`.
       exception, D30) — 4 runs: promoted 5/1/3, rejected 3/3/3/5, with 3 real
       MCP paper orders (broker ids) + `blocked` rows from the position cap.
       `api._bootstrap_db()` copies it onto the volume on first boot.
-- [ ] **T7.2** Deploy with a persistent DB path and env vars set.
-      *Accept:* public URL, no login, loads in under 3 seconds.
-      Host: **Render** (Railway free plan blocked on the resource limit and the
-      only project belongs to an unrelated app — see below). Deploy files ready:
-      `render.yaml` (Blueprint), `Procfile`, `.python-version`, `requirements.txt`
-      current. Free tier has no disk, so `DB_PATH=/tmp/trading.db` and `api.py`
-      re-seeds it from the committed `seed.db` on every cold start (D30) — the
-      dashboard is always populated; button-triggered cycles persist until the
-      next spin-down. **After deploy:** `GET /api/mcp-check` to confirm the MCP
-      subprocess runs in the Linux container — if it fails, STOP (no SDK fallback).
+- [x] **T7.2** Deploy with a persistent DB path and env vars set.
+      *Accept:* public URL, no login. (Warm loads are sub-second; Render free
+      spins down after ~15 min idle and cold-starts in ~30–60 s — accepted.)
+      **Live: https://alpaca-self-audit.onrender.com/**
+      Host: **Render** (Railway free plan blocked — resource limit, and the one
+      project is an unrelated app; see D32). `render.yaml` Blueprint, free tier,
+      `DB_PATH=/tmp/trading.db` re-seeded from committed `seed.db` on each cold
+      start (D30). Verified 2026-08-29: `/api/health` 200 (bootstrap fired,
+      4 seed runs present); **`/api/mcp-check` 200 — the Alpaca MCP stdio
+      subprocess runs in the Render Linux container** (real paper account
+      returned, ~19 s cold); dashboard + all read endpoints serve; a full cycle
+      (run 5) completed on the instance in 32 s. No SDK fallback was needed.
 - [x] **T7.3** README with setup, architecture, and an honest limitations
       section. `README.md` — architecture diagram, env-var table, local run,
       deploy steps, and a limitations section (paper only, IEX, small sample,

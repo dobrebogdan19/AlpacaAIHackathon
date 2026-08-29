@@ -323,3 +323,21 @@ that matters is seeded and committed. A paid instance + the `disk:` block in
 deploying onto the existing `observant-quietude`/`flowzy-v5` service (would
 clobber an unrelated production app); Fly.io / a VPS (more setup, no gain here).
 *Supersedes the "Deployment: Railway" line in CLAUDE.md Stack.*
+*Verified on deploy (2026-08-29): the Alpaca MCP stdio subprocess (D23) runs
+fine in the Render Linux container — `/api/mcp-check` returned the real paper
+account. The Windows-vs-Linux worry in D23 did not materialise.*
+
+### D33 — On the deployed demo, seeded live positions saturate the risk cap
+`seed.db` carries 3 non-terminal `accepted` MCP orders (seed run 1). `risk.py`'s
+`MAX_CONCURRENT_POSITIONS = 3` counts non-terminal `orders` rows, so a fresh boot
+starts already at the cap. A cycle triggered from the live "Run a new cycle"
+button therefore promotes strategies but every resulting order is **blocked**
+("max concurrent positions reached") — which is the risk control working, and is
+visible in the decision log + orders table. This was left as-is: it is an honest
+demonstration and blocking is correct given 3 open paper positions. To show a
+fresh *accepted* order in a demo video instead, clear the 3 seeded positions
+(close them in Alpaca and mark the `orders` rows terminal) or re-run
+`scripts/seed.py --all-dry` so the seed carries no live orders.
+*Rejected:* raising the cap for the demo (would misrepresent the control);
+silently marking the seeded orders terminal (they really are open on the paper
+account).
