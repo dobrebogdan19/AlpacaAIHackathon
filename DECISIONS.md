@@ -306,3 +306,20 @@ definition time, so a test (or `scripts/seed.py`, which sets the env var before
 importing) can repoint the whole system at another file.
 *Rejected:* a config object / settings module (scope); leaving `connect`'s
 default bound at def time (un-repointable without reimporting).
+
+### D32 — Deploy target is Render, not Railway; free tier re-seeds on cold start
+CLAUDE.md named Railway, but the operator's Railway account is on the free plan
+with its one project slot used by an unrelated business app (`flowzy-v5`) that
+must not be touched — `railway init` fails with "resource provision limit
+exceeded". Render's free tier takes a Blueprint (`render.yaml`) and needs no
+paid slot. Its trade-off: no persistent disk on free instances, so
+`DB_PATH=/tmp/trading.db` is wiped on each ~15-min-idle spin-down and
+`api._bootstrap_db()` re-copies the committed `seed.db` on every start. The
+dashboard is therefore always populated (the seeded 4 runs); only cycles a
+visitor triggers between spin-downs are lost. Acceptable for a demo — the record
+that matters is seeded and committed. A paid instance + the `disk:` block in
+`render.yaml` gives full persistence with no code change.
+*Rejected:* Railway paid plan (cost, and not the operator's call to make);
+deploying onto the existing `observant-quietude`/`flowzy-v5` service (would
+clobber an unrelated production app); Fly.io / a VPS (more setup, no gain here).
+*Supersedes the "Deployment: Railway" line in CLAUDE.md Stack.*

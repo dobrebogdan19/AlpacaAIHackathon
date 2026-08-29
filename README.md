@@ -110,14 +110,24 @@ persistent volume on first boot, so the dashboard is populated immediately.
 
 ---
 
-## Deploy (Railway)
+## Deploy (Render)
 
-1. `railway init` in this repo, add a **volume** mounted at `/data`.
-2. Set the env vars above, with `DB_PATH=/data/trading.db`, `DRY_RUN` unset.
-3. `railway up`. Nixpacks builds from `requirements.txt`; the start command is
-   in `railway.json` / `Procfile`.
-4. After the first deploy, hit `GET /api/mcp-check` once to confirm the Alpaca
-   MCP subprocess runs in the Linux container.
+`render.yaml` is a Blueprint — one free-tier web service.
+
+1. Render dashboard → **New → Blueprint**, connect this repo. Render reads
+   `render.yaml`.
+2. It prompts for the three secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`,
+   `OPENAI_API_KEY`). `DB_PATH` and `PYTHON_VERSION` come from the Blueprint;
+   `DRY_RUN` is left unset (live paper orders).
+3. Deploy. Then, in order: `GET /api/health` → `GET /api/mcp-check` (confirms the
+   Alpaca MCP subprocess runs in the container) → load `/` → one `POST /api/cycle`.
+
+**Free tier:** the service spins down after ~15 min idle (cold start on the next
+request — accepted). Free instances have no persistent disk, so `DB_PATH` is
+`/tmp/trading.db`, which `api.py` re-seeds from the committed `seed.db` on every
+start. The dashboard always shows the full seeded record; cycles triggered from
+the button persist only until the next spin-down. For real persistence, upgrade
+to a paid instance and uncomment the `disk:` block in `render.yaml`.
 
 ---
 

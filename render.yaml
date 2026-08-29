@@ -1,0 +1,48 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One free-tier web service running the FastAPI app + dashboard.
+#
+# Free tier notes:
+#   * The service spins down after ~15 min of inactivity; the next request
+#     cold-starts it (a few seconds). This is accepted for the demo.
+#   * Free instances CANNOT mount a persistent disk. DB_PATH therefore points at
+#     /tmp, which is wiped on every cold start — so on each start api.py
+#     re-seeds it from the committed seed.db (api._bootstrap_db). The dashboard
+#     always shows the full seeded record; cycles run via POST /api/cycle
+#     persist only until the next spin-down.
+#   * To get real persistence, upgrade this service to a paid instance type and
+#     uncomment the `disk:` block below (and set DB_PATH to /var/data/trading.db).
+#
+# Secrets (ALPACA_API_KEY, ALPACA_SECRET_KEY, OPENAI_API_KEY) are marked
+# `sync: false` — Render prompts for them in the dashboard on first deploy and
+# never stores them in this file.
+
+services:
+  - type: web
+    name: alpaca-self-audit
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.14"
+      - key: DB_PATH
+        value: /tmp/trading.db
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      # DRY_RUN is intentionally unset — live paper orders through the MCP path.
+
+    # --- uncomment on a PAID instance for a real persistent database ----------
+    # disk:
+    #   name: data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # (and change DB_PATH above to /var/data/trading.db)

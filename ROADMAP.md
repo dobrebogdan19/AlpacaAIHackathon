@@ -195,13 +195,16 @@ SVG (D29). Served at `/` by `api.py`.
       exception, D30) — 4 runs: promoted 5/1/3, rejected 3/3/3/5, with 3 real
       MCP paper orders (broker ids) + `blocked` rows from the position cap.
       `api._bootstrap_db()` copies it onto the volume on first boot.
-- [ ] **T7.2** Deploy to Railway with persistent volume, env vars set.
+- [ ] **T7.2** Deploy with a persistent DB path and env vars set.
       *Accept:* public URL, no login, loads in under 3 seconds.
-      Deploy files ready: `Procfile`, `railway.json`, `.python-version`,
-      `requirements.txt` current. `DB_PATH=/data/trading.db`, volume at `/data`,
-      `DRY_RUN` unset. **After deploy:** hit `GET /api/mcp-check` to confirm the
-      MCP subprocess runs in the Linux container — if it fails, STOP (do not
-      fall back to the SDK).
+      Host: **Render** (Railway free plan blocked on the resource limit and the
+      only project belongs to an unrelated app — see below). Deploy files ready:
+      `render.yaml` (Blueprint), `Procfile`, `.python-version`, `requirements.txt`
+      current. Free tier has no disk, so `DB_PATH=/tmp/trading.db` and `api.py`
+      re-seeds it from the committed `seed.db` on every cold start (D30) — the
+      dashboard is always populated; button-triggered cycles persist until the
+      next spin-down. **After deploy:** `GET /api/mcp-check` to confirm the MCP
+      subprocess runs in the Linux container — if it fails, STOP (no SDK fallback).
 - [x] **T7.3** README with setup, architecture, and an honest limitations
       section. `README.md` — architecture diagram, env-var table, local run,
       deploy steps, and a limitations section (paper only, IEX, small sample,
