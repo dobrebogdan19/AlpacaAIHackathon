@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Self-auditing trading agent</title>
+<style>
+  :root { --bg:#faf9f7; --fg:#1c1b19; --muted:#6b6862; --line:#e2ded7;
+          --promoted:#0a7c3a; --rejected:#a23b2c; --card:#fff; --accent:#1a4f8a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); background:var(--card); }
+  h1 { margin:0 0 4px; font-size:18px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+       margin:0 0 12px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { max-width:1040px; margin:0 auto; padding:24px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px;
+            padding:20px; margin-bottom:20px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line);
+          vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px;
+          font-weight:700; letter-spacing:.03em; }
+  .PROMOTED,.promoted { background:#e4f4ea; color:var(--promoted); }
+  .REJECTED,.rejected { background:#f7e6e3; color:var(--rejected); }
+  .retired { background:#eee; color:var(--muted); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  button { font:inherit; font-weight:600; padding:8px 16px; border:1px solid var(--accent);
+           background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #cycleStatus { margin-left:12px; color:var(--muted); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:12px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:10px;
+    border-radius:2px; margin-right:5px; background:var(--c); vertical-align:middle; }
+  .run-block { margin-bottom:18px; }
+  .run-block > .sub { margin-bottom:6px; }
+  .overflow { overflow-x:auto; }
+  .empty { color:var(--muted); font-style:italic; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Self-auditing trading agent</h1>
+  <div class="sub" id="healthLine">loading…</div>
+</header>
+<main>
+
+  <section>
+    <h2>Promoted strategies — equity curves</h2>
+    <div id="hero"><span class="empty">loading…</span></div>
+    <div class="legend" id="heroLegend"></div>
+    <div class="sub" style="margin-top:8px">
+      Percent return over the backtest window. Only strategies that cleared the
+      promotion gate are shown. Paper trading, daily bars, IEX data — no alpha is claimed.
+    </div>
+  </section>
+
+  <section>
+    <h2>Run a new cycle</h2>
+    <button id="cycleBtn" onclick="runCycle()">Run a new cycle</button>
+    <span id="cycleStatus"></span>
+    <div class="sub" style="margin-top:8px">
+      Generates candidates, backtests them, applies the gate, and routes any
+      promoted strategy to a paper order through the Alpaca MCP server.
+    </div>
+  </section>
+
+  <section>
+    <h2>Decision log</h2>
+    <div class="sub" style="margin-bottom:12px">
+      Every candidate, with the gate's verdict and its exact reason. This is the record the agent judges itself on.
+    </div>
+    <div id="decisionLog"><span class="empty">loading…</span></div>
+  </section>
+
+  <section>
+    <h2>Orders</h2>
+    <div class="overflow"><div id="ordersTable"><span class="empty">loading…</span></div></div>
+  </section>
+
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const COLORS = ["#1a4f8a","#0a7c3a","#a23b2c","#8a6d1a","#5b3a8a","#1a7f8a","#8a1a6d"];
+
+async function j(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function loadHealth() {
+  try {
+    const h = await j("/api/health");
+    const flags = [];
+    if (h.dry_run) flags.push("DRY_RUN");
+    if (h.kill_switch) flags.push("KILL SWITCH ENGAGED");
+    $("healthLine").textContent =
+      `${h.counts.runs} runs · ${h.counts.strategies} strategies · ${h.counts.orders} orders`
+      + (flags.length ? "  —  " + flags.join(" · ") : "");
+  } catch (e) { $("healthLine").textContent = "health check failed: " + e.message; }
+}
+
+function heroSVG(series) {
+  const W = 960, H = 320, P = 36;
+  const norm = series.map(s => {
+    const pts = (s.points || []).filter(p => typeof p.equity === "number");
+    if (pts.length < 2) return null;
+    const base = pts[0].equity;
+    return { name: s.name, symbol: s.symbol,
+             ys: pts.map(p => (p.equity / base - 1) * 100) };
+  }).filter(Boolean);
+  if (!norm.length) return { svg: '<span class="empty">No promoted strategies yet.</span>', legend: "" };
+
+  let lo = 0, hi = 0;
+  norm.forEach(s => s.ys.forEach(y => { lo = Math.min(lo, y); hi = Math.max(hi, y); }));
+  const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+  const x = (i, n) => P + (i / (n - 1)) * (W - 2 * P);
+  const y = (v) => H - P - ((v - lo) / (hi - lo)) * (H - 2 * P);
+  const zeroY = y(0);
+
+  let paths = "";
+  norm.forEach((s, k) => {
+    const d = s.ys.map((v, i) => `${i ? "L" : "M"}${x(i, s.ys.length).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    paths += `<path d="${d}" fill="none" stroke="${COLORS[k % COLORS.length]}" stroke-width="2"/>`;
+  });
+  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="equity curves">
+    <line x1="${P}" y1="${zeroY}" x2="${W-P}" y2="${zeroY}" stroke="#bbb" stroke-dasharray="3 3"/>
+    <text x="${P}" y="${zeroY-4}" font-size="10" fill="#999">0%</text>
+    <text x="${W-P}" y="${y(hi)+10}" font-size="10" fill="#999" text-anchor="end">${hi.toFixed(1)}%</text>
+    <text x="${W-P}" y="${y(lo)-2}" font-size="10" fill="#999" text-anchor="end">${lo.toFixed(1)}%</text>
+    ${paths}
+  </svg>`;
+  const legend = norm.map((s, k) =>
+    `<span style="--c:${COLORS[k % COLORS.length]}">${esc(s.name)} (${esc(s.symbol)})</span>`).join("");
+  return { svg, legend };
+}
+
+async function loadHero() {
+  try {
+    const { series } = await j("/api/equity-curves");
+    const { svg, legend } = heroSVG(series);
+    $("hero").innerHTML = svg;
+    $("heroLegend").innerHTML = legend;
+  } catch (e) { $("hero").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
+function metricCell(m) {
+  if (!m) return "—";
+  return `ret ${m.total_return_pct}% · dd ${m.max_drawdown_pct}% · `
+       + `${m.num_trades} trades · win ${m.win_rate_pct}%`
+       + (m.open_position ? " · <em>open</em>" : "");
+}
+
+async function loadDecisionLog() {
+  try {
+    const { runs } = await j("/api/runs");
+    if (!runs.length) { $("decisionLog").innerHTML = '<span class="empty">No runs yet.</span>'; return; }
+    const details = await Promise.all(runs.slice(0, 12).map(r => j(`/api/runs/${r.id}`)));
+    $("decisionLog").innerHTML = details.map(({ run, candidates }) => {
+      const when = (run.started_at || "").replace("T", " ").slice(0, 16);
+      const status = run.finished_at
+        ? `${run.n_promoted ?? 0} promoted / ${run.n_rejected ?? 0} rejected`
+        : (run.n_generated === -1 ? "failed" : "running…");
+      const rows = candidates.map(c => `
+        <tr>
+          <td>${esc(c.name)}<div class="sub">${esc(c.symbol)} · ${esc(c.source)}</div></td>
+          <td><span class="pill ${esc(c.outcome)}">${esc(c.outcome.toUpperCase())}</span></td>
+          <td>${metricCell(c.metrics)}</td>
+          <td>${esc(c.reason)}</td>
+        </tr>`).join("");
+      return `<div class="run-block">
+        <div class="sub"><strong>Run ${run.id}</strong> · ${esc(when)} · ${esc(status)}</div>
+        <div class="overflow"><table>
+          <tr><th>Candidate</th><th>Verdict</th><th>Backtest</th><th>Reason</th></tr>
+          ${rows || '<tr><td colspan="4" class="empty">no candidates</td></tr>'}
+        </table></div>
+      </div>`;
+    }).join("");
+  } catch (e) { $("decisionLog").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
+async function loadOrders() {
+  try {
+    const { orders } = await j("/api/orders");
+    if (!orders.length) { $("ordersTable").innerHTML = '<span class="empty">No orders yet.</span>'; return; }
+    $("ordersTable").innerHTML = `<table>
+      <tr><th>#</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Status</th>
+          <th>Via</th><th>Broker order id</th><th>When</th></tr>
+      ${orders.map(o => `<tr>
+        <td>${o.id}</td>
+        <td>${esc(o.strategy_name)}</td>
+        <td>${esc(o.symbol)}</td>
+        <td>${esc(o.side)}</td>
+        <td>${esc(o.status)}${o.dry_run ? " <span class='sub'>(dry)</span>" : ""}</td>
+        <td><span class="pill ${o.submitted_via === 'mcp' ? 'promoted' : ''}">${esc(o.submitted_via)}</span></td>
+        <td class="mono">${esc(o.broker_order_id || "—")}</td>
+        <td class="sub">${esc((o.created_at || "").replace("T", " ").slice(0, 16))}</td>
+      </tr>`).join("")}
+    </table>`;
+  } catch (e) { $("ordersTable").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
+function refreshAll() { loadHealth(); loadHero(); loadDecisionLog(); loadOrders(); }
+
+let polling = null;
+async function runCycle() {
+  const btn = $("cycleBtn"), status = $("cycleStatus");
+  btn.disabled = true;
+  status.textContent = "starting…";
+  try {
+    const { run_id } = await j("/api/cycle", { method: "POST" });
+    status.textContent = `run ${run_id} started — working…`;
+    clearInterval(polling);
+    polling = setInterval(async () => {
+      try {
+        const { run } = await j(`/api/runs/${run_id}`);
+        if (run.finished_at) {
+          clearInterval(polling);
+          btn.disabled = false;
+          status.textContent = run.n_generated === -1
+            ? `run ${run_id} failed — see server logs`
+            : `run ${run_id} done: ${run.n_promoted ?? 0} promoted, ${run.n_rejected ?? 0} rejected`;
+          refreshAll();
+        }
+      } catch (_) {}
+    }, 2000);
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = "could not start: " + e.message;
+  }
+}
+
+refreshAll();
+</script>
+</body>
+</html>

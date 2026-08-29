@@ -250,3 +250,59 @@ when the LLM's own output all fails the gate). Seeded candidates go through the
 identical gate and risk path as any other; nothing is bypassed.
 *Rejected:* a `run_cycle` that owns its DB connection and calls `generator`
 directly (untestable without the network; not reusable from an HTTP handler).
+
+### D27 — Phase 5+6+7 built before Phase 4
+The roadmap order is Phase 4 (regret ledger) then 5/6/7. We inverted it: a live
+public URL is the non-negotiable deliverable (an undeployed project is not a
+valid submission), and Phase 4 is more valuable built on top of a deployed,
+observable system than as a prerequisite to it. Phase 4 is still fully scaffolded
+in the schema (D18) — no rework is created by deferring it.
+*Rejected:* building Phase 4 first and risking the deadline with nothing live.
+
+### D28 — `api.py`: every GET reads stored rows; `POST /api/cycle` is the only write
+The read endpoints (`/api/runs`, `/api/strategies`, `/api/orders`,
+`/api/equity-curves`, `/api/health`) run pure `SELECT`s — rendering the dashboard
+never needs a live market, a scheduler, or a network call (D6). `POST /api/cycle`
+pre-creates the `runs` row so it can return the id immediately, then runs the
+(slow: LLM + MCP) cycle in a FastAPI background task. It is single-flighted (a
+`threading.Lock` + a `running` flag) and rate-limited to one per
+`CYCLE_MIN_INTERVAL_S` (default 60s) in-process, so a visitor cannot spam the
+OpenAI key or the paper account. `cycle.run_cycle` gained an optional `run_id`
+param for this; passing `None` keeps the old behaviour (tests unchanged).
+*Rejected:* a real task queue / Celery (scope — CLAUDE.md); computing anything on
+a GET (D6); letting `run_cycle` create the run row and polling for "the latest"
+(racy).
+
+### D29 — The dashboard is one static HTML file, hand-drawn SVG, no build step
+`static/index.html` is plain HTML + vanilla `fetch` + inline `<svg>` for the
+equity curves. No framework, no npm, no bundler, no CDN chart library. The whole
+UI is understandable from one screenshot: the decision log (every candidate,
+PROMOTED/REJECTED, exact reason) is the centrepiece, with the equity-curve hero
+above it and the orders table (showing `submitted_via='mcp'`) below.
+*Rejected:* React/Vue (build step, CLAUDE.md scope); a CDN chart lib (a network
+dependency for the one thing that must always render); server-side templating
+(no gain over a static file for a read-only page).
+
+### D30 — `seed.db` is a committed, separate SQLite file; the volume is seeded from it on first boot
+`scripts/seed.py` runs a fixed 4-cycle sequence (LLM+fast-seeds live, slow-seeds
+dry, plain-LLM dry, LLM+fast-seeds dry) against a clean `seed.db` and asserts the
+result contains at least one promoting run and one all-rejected run. `seed.db` is
+force-committed (a `!seed.db` exception to the `*.db` gitignore); the working
+`bars_cache.db` stays untracked so local runs don't churn it. On the deployed
+instance `api._bootstrap_db()` copies `seed.db` onto the persistent volume
+(`DB_PATH`) if the volume is empty, so a fresh deploy shows a full dashboard
+before anyone clicks anything. The step-1 live run submits real paper orders
+through MCP, so the seeded orders table has genuine broker ids alongside
+`blocked` rows (the position cap engaging — itself worth showing).
+*Rejected:* committing `bars_cache.db` as-is (1.3 MB of bar cache, dirtied every
+local run); generating the DB at container start (needs keys + network on boot,
+slow, non-deterministic).
+
+### D31 — `DB_PATH` env var selects the SQLite file; `db.connect()` reads it at call time
+`db.py` and `data.py` both resolve `DB_PATH` (env var, else the repo
+`bars_cache.db`) at import. `db.connect()` now takes `db_path=None` and falls
+back to the *current* module global rather than binding the default at
+definition time, so a test (or `scripts/seed.py`, which sets the env var before
+importing) can repoint the whole system at another file.
+*Rejected:* a config object / settings module (scope); leaving `connect`'s
+default bound at def time (un-repointable without reimporting).

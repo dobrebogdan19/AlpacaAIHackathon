@@ -143,38 +143,69 @@ Runner: `cycle.run_cycle(...)` — one function, generate→backtest→gate→ex
 
 ## Phase 5 — API
 
-- [ ] **T5.1** FastAPI app: endpoints for strategies, runs, shadows,
-      decisions, equity curves.
+Built before Phase 4 — see D27 (a live URL is the non-negotiable deliverable).
+
+- [x] **T5.1** FastAPI app: endpoints for strategies, runs, decisions,
+      equity curves. *(shadows are Phase 4.)*
       *Accept:* all dashboard data reachable over HTTP.
-- [ ] **T5.2** `POST /cycle` — trigger a full generate→backtest→gate→execute
+      `api.py` — `GET /api/{health,runs,runs/{id},strategies,strategies/{id},
+      orders,equity-curves}`, every one a pure `SELECT` (D6, D28).
+      `tests/test_api.py`: 9 offline tests (TestClient, temp DB).
+- [x] **T5.2** `POST /cycle` — trigger a full generate→backtest→gate→execute
       cycle on demand.
       *Accept:* returns a run id and completes without an open market.
+      `POST /api/cycle` → 202 + `{run_id}`, runs in a background task,
+      single-flighted + rate-limited to 1 / 60s (D28). Poll `GET /api/runs/{id}`
+      (`finished_at` is the done signal). Verified against the seed sequence
+      (`scripts/seed.py`) — market closed, orders queue.
 - [ ] **T5.3** Scheduler for periodic cycles, with the API still usable
       if the scheduler is not running.
       *Accept:* dashboard renders from stored data alone.
+      *Deferred:* the dashboard already renders from stored data with no
+      scheduler running (D6), and `POST /api/cycle` covers on-demand runs for
+      the demo. A cron/APScheduler loop is post-submission upside.
 
 ---
 
 ## Phase 6 — Dashboard
 
-- [ ] **T6.1** Hero view: active portfolio equity curve plotted among the
-      shadow curves.
+One static file, no build step — `static/index.html`, vanilla `fetch` + inline
+SVG (D29). Served at `/` by `api.py`.
+
+- [x] **T6.1** Hero view: equity curves of the promoted strategies plotted
+      together. *(shadow curves are Phase 4.)*
       *Accept:* understandable from a single screenshot, no explanation.
-- [ ] **T6.2** Decision log: promotions, rejections, retirements, each with
-      its reason.
-- [ ] **T6.3** "Run a new cycle" button wired to `POST /cycle`.
+      Inline SVG from `GET /api/equity-curves`, normalised to % return, legend
+      per strategy, zero line marked.
+- [x] **T6.2** Decision log: every candidate with PROMOTED/REJECTED and its
+      exact reason, grouped by run. *(retirements are Phase 4.)*
+      The centrepiece of the page.
+- [x] **T6.3** "Run a new cycle" button wired to `POST /api/cycle`.
       *Accept:* a visitor can trigger a live cycle and watch it complete.
+      Button → 202, polls `GET /api/runs/{id}` every 2s, refreshes all panels
+      when `finished_at` is set.
 
 ---
 
 ## Phase 7 — Deploy (non-negotiable)
 
-- [ ] **T7.1** Seed the database locally with real generated results.
+- [x] **T7.1** Seed the database locally with real generated results.
       *Accept:* fresh deploy shows a full dashboard immediately.
+      `scripts/seed.py` builds `seed.db` (committed; `!seed.db` gitignore
+      exception, D30) — 4 runs: promoted 5/1/3, rejected 3/3/3/5, with 3 real
+      MCP paper orders (broker ids) + `blocked` rows from the position cap.
+      `api._bootstrap_db()` copies it onto the volume on first boot.
 - [ ] **T7.2** Deploy to Railway with persistent volume, env vars set.
       *Accept:* public URL, no login, loads in under 3 seconds.
-- [ ] **T7.3** README with setup, architecture, and an honest limitations
-      section.
+      Deploy files ready: `Procfile`, `railway.json`, `.python-version`,
+      `requirements.txt` current. `DB_PATH=/data/trading.db`, volume at `/data`,
+      `DRY_RUN` unset. **After deploy:** hit `GET /api/mcp-check` to confirm the
+      MCP subprocess runs in the Linux container — if it fails, STOP (do not
+      fall back to the SDK).
+- [x] **T7.3** README with setup, architecture, and an honest limitations
+      section. `README.md` — architecture diagram, env-var table, local run,
+      deploy steps, and a limitations section (paper only, IEX, small sample,
+      selection bias not yet measured, no learning claim per D9).
 
 ---
 

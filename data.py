@@ -35,7 +35,9 @@ FEED = DataFeed.IEX
 
 log = logging.getLogger("data")
 
-DB_PATH = Path(__file__).with_name("bars_cache.db")
+# Shared with db.py — one SQLite file for the whole system. ``DB_PATH`` env var
+# overrides the location (persistent volume on the deployed instance).
+DB_PATH = Path(os.getenv("DB_PATH") or Path(__file__).with_name("bars_cache.db"))
 
 _data_client: StockHistoricalDataClient | None = None
 

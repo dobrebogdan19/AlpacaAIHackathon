@@ -90,6 +90,7 @@ def run_cycle(
     conn=None,
     db_path=None,
     generate_fn=None,
+    run_id: int | None = None,
     order_notional: float = FIXED_ORDER_NOTIONAL_USD,
     lookback_days: int = BARS_LOOKBACK_DAYS,
 ) -> CycleResult:
@@ -102,6 +103,8 @@ def run_cycle(
     ``.strategies`` (list[Strategy]) and ``.strategy_ids`` (list[int]).
     ``dry_run`` — forwarded to ``risk`` / ``mcp_client``; ``None`` => the
     ``DRY_RUN`` env var decides.
+    ``run_id`` — reuse a pre-created ``runs`` row (the HTTP handler creates it so
+    it can return the id immediately); ``None`` => one is created here.
     """
     own_conn = conn is None
     conn = conn or db.connect(db_path or db.DB_PATH)
@@ -112,7 +115,10 @@ def run_cycle(
         generate_fn = generator.generate
 
     try:
-        run_id = db.start_run(conn)
+        # Phase 5: an HTTP handler pre-creates the run row so it can return the
+        # id before the (slow) cycle finishes, then passes it in here.
+        if run_id is None:
+            run_id = db.start_run(conn)
         log.info("=== cycle start (run %d, dry_run=%s) ===", run_id, is_dry)
 
         gen = generate_fn(n=n, symbols=symbols, conn=conn, run_id=run_id)

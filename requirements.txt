@@ -4,6 +4,10 @@ pydantic==2.13.5
 python-dotenv==1.2.3
 pytest==9.1.1
 
+# Phase 5 — HTTP surface (api.py) and the dashboard server.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+
 # Alpaca MCP server — the agent's order-execution path (D7 / T3.2).
 # Driven over stdio from mcp_client.py via fastmcp's client.
 alpaca-mcp-server==2.3.0

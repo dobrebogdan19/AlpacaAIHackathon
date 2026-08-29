@@ -23,12 +23,15 @@ No shadow-specific tables are created yet — that is Phase 4's job.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Same file as data.py's bar cache — one database for the whole system.
-DB_PATH = Path(__file__).with_name("bars_cache.db")
+# ``DB_PATH`` env var overrides the location (the deployed instance points this
+# at a persistent volume, e.g. ``/data/trading.db``); default is the repo file.
+DB_PATH = Path(os.getenv("DB_PATH") or Path(__file__).with_name("bars_cache.db"))
 
 
 def _now() -> str:
@@ -123,13 +126,15 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def connect(db_path: Path | str = DB_PATH) -> sqlite3.Connection:
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open (creating if needed) the database, with the schema ensured.
 
+    ``db_path`` defaults to the module-level ``DB_PATH`` (resolved from the
+    ``DB_PATH`` env var), read at call time so tests can repoint it.
     ``row_factory`` is ``sqlite3.Row`` so callers get name-addressable rows, and
     foreign keys are enforced.
     """
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     init_db(conn)
