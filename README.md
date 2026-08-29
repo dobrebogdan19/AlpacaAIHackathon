@@ -117,8 +117,8 @@ persistent volume on first boot, so the dashboard is populated immediately.
 1. Render dashboard → **New → Blueprint**, connect this repo. Render reads
    `render.yaml`.
 2. It prompts for the three secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`,
-   `OPENAI_API_KEY`). `DB_PATH` and `PYTHON_VERSION` come from the Blueprint;
-   `DRY_RUN` is left unset (live paper orders).
+   `OPENAI_API_KEY`). `DB_PATH` comes from the Blueprint, the Python version from
+   `.python-version`; `DRY_RUN` is left unset (live paper orders).
 3. Deploy. Then, in order: `GET /api/health` → `GET /api/mcp-check` (confirms the
    Alpaca MCP subprocess runs in the container) → load `/` → one `POST /api/cycle`.
 
