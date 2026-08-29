@@ -88,6 +88,32 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_strategy ON decisions (strategy_id);
+
+-- Phase 3 (T3.2): every order the agent submits, and which strategy caused it.
+-- ``submitted_via`` is always 'mcp' for the agent's real path (D7); the column
+-- exists so a reviewer can see it in the row, not just the logs.
+CREATE TABLE IF NOT EXISTS orders (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id     INTEGER NOT NULL REFERENCES strategies (id),
+    run_id          INTEGER REFERENCES runs (id),
+    broker_order_id TEXT,                 -- Alpaca order id (NULL for a DRY_RUN or a failure)
+    symbol          TEXT NOT NULL,
+    qty             REAL,
+    side            TEXT NOT NULL,
+    status          TEXT NOT NULL,        -- Alpaca status, or 'dry_run' / 'blocked' / 'error'
+    submitted_via   TEXT NOT NULL DEFAULT 'mcp' CHECK (submitted_via IN ('mcp', 'sdk')),
+    dry_run         INTEGER NOT NULL DEFAULT 0,
+    raw_response    TEXT,                 -- raw MCP tool result, kept for audit
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_orders_strategy ON orders (strategy_id);
+
+-- Phase 3 (T3.3): a DB-backed kill switch (the env var is the other way in).
+CREATE TABLE IF NOT EXISTS system_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -263,3 +289,54 @@ def insert_decision(
 
 def list_decisions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM decisions ORDER BY id").fetchall()
+
+
+# --- orders -----------------------------------------------------------------
+
+
+def insert_order(
+    conn: sqlite3.Connection,
+    *,
+    strategy_id: int,
+    run_id: int | None,
+    symbol: str,
+    qty: float | None,
+    side: str,
+    status: str,
+    broker_order_id: str | None = None,
+    submitted_via: str = "mcp",
+    dry_run: bool = False,
+    raw_response: str | None = None,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO orders
+               (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
+                submitted_via, dry_run, raw_response, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
+         submitted_via, 1 if dry_run else 0, raw_response, _now()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_orders(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM orders ORDER BY id").fetchall()
+
+
+# --- system state (DB-backed kill switch, etc.) ----------------------------
+
+
+def get_flag(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM system_state WHERE key = ?", (key,)).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_flag(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value,
+                                           updated_at = excluded.updated_at""",
+        (key, value, _now()),
+    )
+    conn.commit()

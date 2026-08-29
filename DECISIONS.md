@@ -169,3 +169,84 @@ operand order can't fake a new strategy; name and rationale excluded), stored as
 never duplicates rows.
 *Rejected:* retrying to top up the count (scope creep, burns tokens); comparing
 full JSON (defeated by reordering and by name/rationale differences).
+
+### D21 — `min_trades` gate raised from 3 to 10; all-fail is reported, not fixed
+The Phase 1 skeleton gated on `min_trades = 3` with a TODO saying that was too
+low. `gate.py` sets it to 10: three realised round-trips over ~250 daily bars is
+noise, and the gate exists to reject noise. On real bars today the LLM-generated
+crossover strategies essentially never clear it (most produce 0–4 trades, or a
+negative return). That is the correct outcome and `cycle.run_cycle` reports it
+as-is (every rejection carries the specific failing threshold). We did **not**
+lower the bar to make the demo show a promotion (CLAUDE.md: never overstate).
+The three thresholds live in one dict at the top of `gate.py`.
+*Rejected:* keeping 3 (statistically meaningless); tuning thresholds per-run to
+manufacture promotions.
+
+### D22 — Two new tables in Phase 3: `orders` and `system_state`
+`db.py` gains `orders` (every submission: strategy_id, run_id, broker_order_id,
+symbol/qty/side, status, `submitted_via` CHECK('mcp','sdk'), `dry_run`, raw MCP
+response) and `system_state` (key/value — the DB side of the kill switch). Both
+are `CREATE TABLE IF NOT EXISTS` in the same idempotent script, same DB file.
+D18 said Phase 4 needs no new DDL; that still holds — this DDL is for Phase 3's
+execution path, not shadows.
+*Rejected:* stuffing order records into `decisions` (different lifecycle, has a
+broker id and a mutable status); a JSON blob column instead of a table.
+
+### D23 — The MCP order path is a stdio subprocess driven by `fastmcp.Client`
+`mcp_client.py` spawns `alpaca-mcp-server` (pip package, v2.3.0) as a subprocess
+speaking MCP over stdio and calls its `place_stock_order` tool via
+`fastmcp.Client` + `StdioTransport`. The CLAUDE.md STOP condition ("if the MCP
+server is impractical to drive programmatically from our backend, stop and tell
+me") was checked first: it is practical — `scripts/check_mcp.py` and
+`scripts/run_cycle_demo.py` both complete real paper orders this way, and the
+logs show every hop (`ROUTING ORDER VIA ALPACA MCP SERVER`, the subprocess line,
+`invoking 'place_stock_order'`, `MCP ORDER ACCEPTED ... (submitted via MCP)`).
+Notes: the package has no `__main__`, so we invoke `alpaca_mcp_server.cli:main`
+directly; `ALPACA_PAPER_TRADE=true` is forced into the subprocess env so this
+path can only reach the paper endpoint; `_call()` wraps the async round trip so
+it is synchronously callable and monkeypatchable.
+*Rejected:* the plain `mcp` SDK stdio client (hit "Connection closed" on
+Windows where fastmcp's client worked); an HTTP-transport server (extra moving
+part for no gain locally); direct `alpaca-py` order calls (D7 — the MCP hop is
+the sponsor integration and must be visible in the demo).
+
+### D24 — Risk checks: env-or-DB kill switch, plus position and notional ceilings
+`risk.check(conn, notional=, dry_run=)` runs before every order in `cycle.py`,
+with no code path around it. Order of checks: (1) kill switch — `KILL_SWITCH`
+env var truthy **or** `system_state.kill_switch` truthy, either blocks
+everything; (2) `MAX_CONCURRENT_POSITIONS = 3` — counts distinct strategies with
+a non-terminal `orders` row; (3) `MAX_NOTIONAL_PER_POSITION = 2000` — a sanity
+ceiling on top of the fixed $1000 notional. Every block is logged at WARNING
+("ORDER BLOCKED — <reason>") and the reason is persisted (`orders.status =
+'blocked'`, reason in `raw_response`). `DRY_RUN` (explicit arg or env var) is
+surfaced on the result and honoured by `mcp_client` (no subprocess, no order),
+but does not itself block — a dry run passes every check so the logs show what a
+live run would do.
+*Rejected:* a kill switch that is only an env var (a dashboard button in Phase 6
+needs the DB flag); blocking on DRY_RUN (hides whether the rest of the path is
+healthy).
+
+### D25 — `data.py` now pins `feed=IEX`; generator prompt spans fast periods
+Two small fixes surfaced by running the cycle live for the first time.
+(1) `data._fetch_from_alpaca` now passes `feed=DataFeed.IEX`. Without it the
+free-tier account 403s ("subscription does not permit querying recent SIP data")
+as soon as the requested window reaches the present — this is the IEX-only
+constraint already noted in D5, now enforced in code. Bug fix, not a refactor.
+(2) `generator._user_message` now asks for some strategies with SMA/EMA periods
+in the 2–15 range, not only slow 50/100/200 ones, so the candidate set actually
+spans the trade-frequency axis the gate measures. The gate is unchanged.
+*Rejected:* buffering `end` to yesterday instead of setting the feed (treats a
+symptom); leaving the prompt alone (every candidate trivially fails `min_trades`
+for a reason unrelated to strategy quality).
+
+### D26 — `cycle.run_cycle` is the programmatic entry point; generation is injectable
+`run_cycle(*, symbols, n, dry_run, conn, db_path, generate_fn, ...)` is a plain
+function with no `__main__`-only logic — Phase 5 will call it from a FastAPI
+handler. `conn` lets a caller (and the tests) reuse a connection; `generate_fn`
+lets a caller substitute strategy generation (tests inject a fake; the demo
+script wraps the real generator and appends a few hand-written fast-crossover
+candidates so a full run — including a real MCP order — is demonstrable on a day
+when the LLM's own output all fails the gate). Seeded candidates go through the
+identical gate and risk path as any other; nothing is bypassed.
+*Rejected:* a `run_cycle` that owns its DB connection and calls `generator`
+directly (untestable without the network; not reusable from an HTTP handler).

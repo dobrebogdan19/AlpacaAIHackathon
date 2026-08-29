@@ -23,9 +23,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+
+# Free-tier accounts may only query IEX (see CLAUDE.md D5). Without this the API
+# 403s ("subscription does not permit querying recent SIP data") as soon as the
+# requested window reaches the last ~15 minutes.
+FEED = DataFeed.IEX
 
 log = logging.getLogger("data")
 
@@ -128,6 +134,7 @@ def _fetch_from_alpaca(symbol, start: date, end: date, timeframe: TimeFrame) -> 
         timeframe=timeframe,
         start=datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
         end=datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc),
+        feed=FEED,
     )
     resp = _client().get_stock_bars(req)
     if symbol not in resp.data:

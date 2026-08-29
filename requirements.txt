@@ -3,3 +3,8 @@ openai==3.6.0
 pydantic==2.13.5
 python-dotenv==1.2.3
 pytest==9.1.1
+
+# Alpaca MCP server — the agent's order-execution path (D7 / T3.2).
+# Driven over stdio from mcp_client.py via fastmcp's client.
+alpaca-mcp-server==2.3.0
+fastmcp==3.4.7

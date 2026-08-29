@@ -112,7 +112,10 @@ def _user_message(n: int, symbols: list[str]) -> dict:
             f"Generate {n} DISTINCT long-only strategies as JSON. "
             f"Pick symbols from: {', '.join(symbols)}. "
             "Vary the indicators, periods, and structure — do not just rescale one idea. "
-            "Some strategies should use a 2-condition entry. Keep rationales short."
+            "Some strategies should use a 2-condition entry. "
+            "Span the period range: include some fast strategies (SMA/EMA periods "
+            "in the 2-15 range) that trade frequently, not only slow 50/100/200 ones. "
+            "Keep rationales short."
         ),
     }
 

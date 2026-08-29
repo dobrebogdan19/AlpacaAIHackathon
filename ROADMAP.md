@@ -85,14 +85,37 @@ Split the skeleton into modules. Behaviour must not change.
 
 ## Phase 3 — Gate and execution
 
-- [ ] **T3.1** Promotion gate with configurable thresholds; records the
+- [x] **T3.1** Promotion gate with configurable thresholds; records the
       reason for every promote/reject.
       *Accept:* every candidate has a written reason stored.
-- [ ] **T3.2** Order execution through the **Alpaca MCP server**.
+      `gate.py` — 3 thresholds in one dict; `min_trades` raised 3→10 (D21).
+      `gate.evaluate()` returns a reason naming every failed threshold, for
+      promote and reject alike; `cycle.run_cycle` writes a `decisions` row for
+      every candidate (`test_cycle.py::test_every_candidate_gets_a_decision_row`:
+      4 candidates → 4 decision rows, all reasons non-empty). `test_gate.py`:
+      7 tests.
+- [x] **T3.2** Order execution through the **Alpaca MCP server**.
       *Accept:* a promoted strategy produces a real paper order via MCP,
       visible in the Alpaca dashboard.
-- [ ] **T3.3** Kill switch + position limits checked before every order.
+      `mcp_client.py` drives `alpaca-mcp-server` (v2.3.0) over a stdio subprocess
+      via `fastmcp.Client` and calls `place_stock_order` (D23). `scripts/
+      run_cycle_demo.py` on 2026-08-29 promoted 2 strategies and submitted 2
+      real paper orders through MCP — ids `54c5bdf6-3c57-4c93-b01d-67cfae7b86c3`
+      (SPY) and `7320049b-1c53-4d24-98ad-8b6faff75c67` (AAPL), both `accepted`,
+      persisted to `orders` with `submitted_via='mcp'`. Logs show every MCP hop.
+      `test_mcp_client.py`: 9 tests (offline).
+- [x] **T3.3** Kill switch + position limits checked before every order.
       *Accept:* flipping the switch blocks orders with a logged reason.
+      `risk.check()` runs before every order in `cycle.py` (D24): env-or-DB kill
+      switch, `MAX_CONCURRENT_POSITIONS=3`, `MAX_NOTIONAL_PER_POSITION=2000`,
+      `DRY_RUN` honoured. Verified live: `KILL_SWITCH=1 python scripts/
+      run_cycle_demo.py` → both promoted strategies logged
+      "ORDER BLOCKED — kill switch engaged", `orders.status='blocked'`, no order
+      sent. `test_risk.py`: 12 tests.
+
+Runner: `cycle.run_cycle(...)` — one function, generate→backtest→gate→execute
+→persist, no `__main__`-only logic, `generate_fn` injectable (D26). Phase 5
+(`POST /cycle`) calls it directly.
 
 > **Checkpoint:** with Phase 3 done, the project is complete and submittable.
 > Everything below is upside.
