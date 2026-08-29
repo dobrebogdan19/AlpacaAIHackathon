@@ -158,10 +158,11 @@ def get_run(run_id: int):
         for d in decisions:
             bt = _row(
                 conn,
-                """SELECT metrics_json, equity_curve_json, bars_start, bars_end
+                """SELECT metrics_json, equity_curve_json, bars_start, bars_end, kind
                      FROM backtests
                     WHERE run_id = ? AND strategy_id = ?
-                    ORDER BY id DESC LIMIT 1""",
+                    ORDER BY (kind = 'primary') DESC, (kind = 'insample') DESC, id DESC
+                    LIMIT 1""",
                 (run_id, d["strategy_id"]),
             )
             candidates.append({
@@ -176,6 +177,7 @@ def get_run(run_id: int):
                 "metrics": _loads(bt["metrics_json"]) if bt else None,
                 "bars_start": bt["bars_start"] if bt else None,
                 "bars_end": bt["bars_end"] if bt else None,
+                "metrics_kind": bt["kind"] if bt else None,
             })
 
         orders = _rows(
@@ -200,7 +202,8 @@ def list_strategies():
             bt = _row(
                 conn,
                 """SELECT metrics_json, bars_start, bars_end, run_id
-                     FROM backtests WHERE strategy_id = ? ORDER BY id DESC LIMIT 1""",
+                     FROM backtests WHERE strategy_id = ? AND kind = 'primary'
+                     ORDER BY id DESC LIMIT 1""",
                 (s["id"],),
             )
             last_decision = _row(
@@ -298,7 +301,9 @@ def equity_curves():
         for s in promoted:
             bt = _row(
                 conn,
-                "SELECT equity_curve_json, metrics_json FROM backtests WHERE strategy_id = ? ORDER BY id DESC LIMIT 1",
+                """SELECT equity_curve_json, metrics_json FROM backtests
+                    WHERE strategy_id = ? AND kind = 'primary'
+                    ORDER BY id DESC LIMIT 1""",
                 (s["id"],),
             )
             if not bt:
@@ -316,6 +321,148 @@ def equity_curves():
                 ],
             })
         return {"series": series}
+    finally:
+        conn.close()
+
+
+# --- Phase 4: the regret ledger (all pure SELECTs) -----------------------
+
+
+def _latest_as_of_run(conn) -> dict | None:
+    return _row(
+        conn,
+        "SELECT * FROM runs WHERE as_of IS NOT NULL ORDER BY id DESC LIMIT 1",
+    )
+
+
+@app.get("/api/shadow-curves")
+def shadow_curves():
+    """Forward-tracked equity curves for the latest as-of run — the hero plot.
+
+    Every evaluated strategy's forward curve (measured from the as-of decision
+    date), tagged with its CURRENT status so the dashboard can plot active
+    strategies among the shadows. This is a historical simulation of forward
+    tracking, not live results — ``as_of`` and ``simulation`` say so.
+    """
+    conn = _conn()
+    try:
+        run = _latest_as_of_run(conn)
+        if run is None:
+            return {"as_of": None, "simulation": True, "series": []}
+        rows = _rows(
+            conn,
+            """SELECT b.strategy_id, b.metrics_json, b.equity_curve_json,
+                      b.bars_start, b.bars_end, s.name, s.symbol, s.source, s.status
+                 FROM backtests b JOIN strategies s ON s.id = b.strategy_id
+                WHERE b.run_id = ? AND b.kind = 'forward'
+                ORDER BY b.strategy_id""",
+            (run["id"],),
+        )
+        decisions = {
+            d["strategy_id"]: d["outcome"]
+            for d in _rows(conn,
+                           "SELECT strategy_id, outcome FROM decisions WHERE run_id = ? "
+                           "AND outcome IN ('promoted','rejected')", (run["id"],))
+        }
+        series = []
+        for r in rows:
+            curve = _loads(r["equity_curve_json"]) or []
+            series.append({
+                "strategy_id": r["strategy_id"],
+                "name": r["name"],
+                "symbol": r["symbol"],
+                "source": r["source"],
+                "status": r["status"],
+                "as_of_decision": decisions.get(r["strategy_id"]),
+                "tracking_start": r["bars_start"],
+                "metrics": _loads(r["metrics_json"]),
+                "points": [
+                    {"date": str(p.get("date"))[:10], "equity": p.get("equity")}
+                    for p in curve
+                ],
+            })
+        return {"as_of": run["as_of"], "simulation": True, "series": series}
+    finally:
+        conn.close()
+
+
+@app.get("/api/selection-bias")
+def selection_bias():
+    """T4.5 — mean forward return of as-of-promoted vs as-of-rejected candidates.
+
+    Computed from stored rows of the latest as-of run. Reported as-is with the
+    sample size, whatever it says (D10).
+    """
+    conn = _conn()
+    try:
+        run = _latest_as_of_run(conn)
+        if run is None:
+            return {"as_of": None, "available": False,
+                    "note": "no as-of evaluation has been run yet"}
+        rows = _rows(
+            conn,
+            """SELECT d.outcome, b.metrics_json
+                 FROM decisions d
+                 JOIN backtests b
+                   ON b.strategy_id = d.strategy_id AND b.run_id = d.run_id
+                      AND b.kind = 'forward'
+                WHERE d.run_id = ? AND d.outcome IN ('promoted','rejected')""",
+            (run["id"],),
+        )
+        buckets: dict[str, list[float]] = {"promoted": [], "rejected": []}
+        for r in rows:
+            m = _loads(r["metrics_json"]) or {}
+            if "total_return_pct" in m:
+                buckets[r["outcome"]].append(float(m["total_return_pct"]))
+        def avg(xs):
+            return round(sum(xs) / len(xs), 2) if xs else None
+        prom, rej = avg(buckets["promoted"]), avg(buckets["rejected"])
+        spread = round(prom - rej, 2) if prom is not None and rej is not None else None
+        return {
+            "as_of": run["as_of"],
+            "available": spread is not None,
+            "promoted_avg_forward_return_pct": prom,
+            "rejected_avg_forward_return_pct": rej,
+            "n_promoted": len(buckets["promoted"]),
+            "n_rejected": len(buckets["rejected"]),
+            "spread_pp": spread,
+            "note": (
+                "Average forward return of strategies the gate would have promoted "
+                "at the as-of date, minus that of the ones it rejected, over bars "
+                "the gate never saw. A spread near zero means the gate is not "
+                "distinguishing signal from noise. Small sample — read with the n."
+            ),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/retirements")
+def retirements():
+    """Every retirement the regret ledger triggered, with its post-mortem."""
+    conn = _conn()
+    try:
+        pms = _rows(
+            conn,
+            """SELECT p.*, r.name AS retired_name, r.symbol AS symbol,
+                      w.name AS promoted_name, d.reason AS reason, d.created_at AS retired_at
+                 FROM postmortems p
+                 JOIN strategies r ON r.id = p.retired_strategy_id
+                 JOIN strategies w ON w.id = p.promoted_strategy_id
+                 LEFT JOIN decisions d ON d.id = p.decision_id
+                ORDER BY p.id DESC""",
+        )
+        for p in pms:
+            p["facts"] = _loads(p.pop("facts_json"))
+            close = _row(
+                conn,
+                """SELECT status FROM orders
+                    WHERE strategy_id = ? AND run_id = ? AND side = 'sell'
+                    ORDER BY id DESC LIMIT 1""",
+                (p["retired_strategy_id"], p["run_id"]),
+            )
+            p["close_status"] = close["status"] if close else None
+        return {"retirements": pms}
     finally:
         conn.close()
 

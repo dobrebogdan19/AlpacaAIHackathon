@@ -38,6 +38,7 @@ log = logging.getLogger("mcp_client")
 
 PLACE_ORDER_TOOL = "place_stock_order"
 ACCOUNT_TOOL = "get_account_info"
+CLOSE_POSITION_TOOL = "close_position"
 
 # The MCP server has no ``__main__``; invoke its CLI entry point directly so this
 # works regardless of how the console script is installed / on PATH.
@@ -141,6 +142,47 @@ def check_connection() -> dict:
     log.info("MCP connection OK — paper account %s (%d tools)",
              data.get("account_number", "?"), len(tools))
     return data
+
+
+def close_position(symbol: str, *, dry_run: bool | None = None) -> OrderResult:
+    """Close the whole paper position in ``symbol`` via the MCP server (T4.3).
+
+    Used when a retired strategy is still holding. ``dry_run`` (default: the
+    ``DRY_RUN`` env var) spawns nothing and closes nothing. A "no open position"
+    response from the server is treated as success — there is nothing to do.
+    """
+    import risk
+
+    is_dry = risk.dry_run_active(dry_run)
+    if is_dry:
+        log.info("DRY_RUN — NOT closing the %s position through MCP", symbol)
+        return OrderResult(ok=True, status="dry_run", symbol=symbol, side="sell",
+                           raw="dry_run: no MCP call made")
+
+    log.info("CLOSING POSITION VIA ALPACA MCP SERVER — tool=%s symbol=%s",
+             CLOSE_POSITION_TOOL, symbol)
+    try:
+        payload, raw, tools = _call(CLOSE_POSITION_TOOL, {"symbol": symbol})
+    except Exception as exc:  # noqa: BLE001 — surface, do not crash the retirement
+        log.error("MCP close-position path failed: %s", exc)
+        return OrderResult(ok=False, status="error", symbol=symbol, side="sell",
+                           error=str(exc), raw="")
+
+    data, err = _unwrap(payload)
+    if err:
+        if "no open position" in str(err).lower() or "position does not exist" in str(err).lower():
+            log.info("MCP: no open %s position to close — nothing to do", symbol)
+            return OrderResult(ok=True, status="no_position", symbol=symbol,
+                               side="sell", raw=raw, tools_seen=tools)
+        log.error("MCP close-position rejected: %s", err)
+        return OrderResult(ok=False, status="error", symbol=symbol, side="sell",
+                           error=err, raw=raw, tools_seen=tools)
+
+    order_id = str(data.get("id")) if isinstance(data, dict) and data.get("id") else None
+    status = str(data.get("status")) if isinstance(data, dict) and data.get("status") else "accepted"
+    log.info("MCP POSITION CLOSE ACCEPTED — %s id=%s status=%s", symbol, order_id, status)
+    return OrderResult(ok=True, status=status, broker_order_id=order_id, symbol=symbol,
+                       side="sell", raw=raw, tools_seen=tools)
 
 
 def submit_market_order(

@@ -341,3 +341,122 @@ fresh *accepted* order in a demo video instead, clear the 3 seeded positions
 *Rejected:* raising the cap for the demo (would misrepresent the control);
 silently marking the seeded orders terminal (they really are open on the paper
 account).
+*Update (2026-08-29, Phase 4 reseed):* the stale pending orders were cancelled
+via MCP (`cancel_all_orders`) before regenerating `seed.db`, so the account no
+longer carries leftovers between seeds. Seed run 1 still submits 3 real orders,
+so the cap behaviour above still holds on a fresh boot.
+
+---
+
+### D34 — `engine.run_backtest` gains `start_index` for forward tracking
+Phase 4 tracks a rejected shadow forward from its decision date `T0`. To evaluate
+a crossover/RSI on the first forward bar you need indicator history from *before*
+`T0`. Slicing the bar list at `T0` instead would inject a spurious ~N-bar warm-up
+(D16 makes an under-fed condition False), delaying every shadow's first signal
+and distorting the exact number T4.5 reports. So `run_backtest(strategy, bars,
+*, start_index=0)`: indicators still see `bars[0..n]`, but the trading loop, the
+equity curve and every metric start at `start_index` — the strategy begins flat
+there and trades forward. `start_index=0` is byte-identical to before (asserted
+by `test_start_index_zero_is_identical_to_default`); D1 is untouched (decide on
+close n, fill at open n+1; last-bar signal still dropped). This is the only
+change to the engine.
+*Rejected:* a bare `bars[split:]` slice (spurious warm-up, as above); an
+`as_of`-date argument in the engine (it is otherwise date-agnostic — keeping it
+index-based keeps it pure; `regret.py` owns the date→index mapping).
+
+### D35 — The as-of date is set to leave a fixed forward-bar count, not searched
+The regret ledger runs "as of" a past date `T0` so that genuinely unseen bars
+exist after it. `T0` is chosen mechanically (`regret._pick_as_of`): the date of
+the bar sitting `FORWARD_BARS_TARGET = 50` positions from the end of the longest
+cached series. 50 is `retire.min_forward_bars` (40, ~2 trading months) plus a
+25% margin, so a retirement *can* fire on a long-enough window — whether one does
+is left to the data. On the committed seed (`seed.db`, generated 2026-08-29) this
+resolves to **2026-06-17** and one retirement fired; the earlier run against the
+pre-Phase-4 seed produced none. Both were kept as they came.
+*Rejected, explicitly:* scanning candidate `T0` dates for one that produces a
+retirement or a flattering selection-bias number. The instruction was that a
+system which correctly declines to churn is a valid result, so the date is fixed
+on a principled basis and the outcome is reported as-is.
+*Note:* this is a **historical simulation of forward tracking**, not weeks of
+live results. `regret.py`, `runs.as_of`, the `/api/shadow-curves` payload
+(`simulation: true`) and the dashboard all say so; nothing presents it as a
+live track record.
+
+### D36 — Retirement rule: 5pp forward margin, ≥40-bar window, active also losing
+`retire.RETIREMENT_POLICY` — three knobs, one dict, mirroring `gate.py`:
+* `min_forward_bars = 40` — ~2 trading months. Below this, daily-bar forward
+  performance is one or two trades' worth of luck, not evidence.
+* `min_outperformance_pct = 5.0` — the shadow must beat the active by more than
+  5 percentage points of forward total return. Smaller gaps are noise.
+* `active_max_forward_return_pct = 0.0` — an **absolute** condition: the active
+  strategy's own forward return must be ≤ 0. A profitable active is never
+  retired just because a shadow did better — that would churn on noise. The
+  claim (D9) is that the agent revises a decision when evidence *contradicts*
+  it, and "the strategy we ran lost money while one we rejected did better" is
+  exactly that.
+Shadows are matched to actives **by symbol** — a forward-return comparison only
+controls for the instrument when the instrument is the same. Actives are
+considered worst-forward-first, so a shadow that could retire several is spent
+on the biggest regret.
+*Rejected:* no absolute condition (churns actives that are doing fine);
+cross-symbol comparison (not a like-for-like alternative to the capital
+decision); a drawdown- or Sharpe-based margin (total return is what the gate
+and the shadow curves already speak in — keep one axis).
+
+### D37 — The post-mortem LLM is fed only a numbers dict, never prose
+`postmortem.generate_postmortem(facts)` where `facts` (built by `retire._facts`)
+is strictly numeric: both strategies' in-sample and forward metrics, the window,
+the policy. The system prompt forbids inventing market events, causes, price
+moves or any narrative not derivable from those numbers, and asks only for a
+contrast of in-sample vs forward plus what the gate missed. `_call_llm` is the
+single network seam (monkeypatched in tests). If it fails or returns empty,
+`_fallback_text` renders the same facts plainly — a retirement is never left
+without an explanation. Stored in the new `postmortems` table with its
+`facts_json` alongside, so a reviewer can check the prose against its inputs.
+*Rejected:* passing the strategy rationales or names-with-adjectives to the model
+(invites storytelling); no fallback (a flaky API key would break `seed.py`).
+
+### D38 — Selection-bias is computed from stored forward backtests, reported with n
+T4.5's headline: mean forward `total_return_pct` of as-of-**promoted** minus
+as-of-**rejected** candidates, over the latest as-of run. `regret.selection_bias`
+computes it from the in-memory records; `GET /api/selection-bias` recomputes it
+from stored rows (`decisions` join `backtests WHERE kind='forward'`) so the
+dashboard needs nothing live (D6). The sample size (`n_promoted`, `n_rejected`)
+is returned and shown next to the number, every time — with four cycles of
+candidates it is small, and saying so is part of the honesty (D10). On the
+committed seed: **+2.22pp** (promoted +2.85%, n=4; rejected +0.63%, n=15).
+Reported as-is whatever it says.
+
+### D39 — Phase 4 DDL: `backtests.kind` / `backtests.as_of`, `runs.as_of`, `postmortems`
+D18 said Phase 4 needed no migration. That held for the core shadow mechanic (a
+forward replay is still just a `backtests` row) but not for two genuinely new
+things, so — as D22 did for Phase 3's `orders` / `system_state` — `db.py` grew:
+* `backtests.kind` ∈ {`primary`, `insample`, `forward`} and `backtests.as_of` —
+  the split marker the selection-bias query needs;
+* `runs.as_of` — flags a run as an as-of forward-tracking simulation;
+* table `postmortems` (T4.4).
+`CREATE TABLE IF NOT EXISTS` cannot add a column to an existing table, so the
+three `ALTER`s run through `_apply_migrations`, guarded against `PRAGMA
+table_info` — idempotent, and applied to the committed `seed.db` when it is
+re-seeded onto the Render volume (D30). The read endpoints that predate Phase 4
+(`/api/equity-curves`, `/api/strategies`, `/api/runs/{id}`) now filter
+`kind='primary'` (or prefer it) so their meaning is unchanged.
+*Rejected:* a separate `shadow_evals` table (the task wants forward runs
+preserved *as backtests rows*); inferring `kind` from `bars_start` vs `as_of`
+(fragile); a config/settings module for the new knobs (scope — they live in
+`regret.py` / `retire.py` module constants like every other knob).
+
+### D40 — The regret ledger reuses every stored strategy; it does not generate afresh
+`regret.run_regret_ledger` evaluates the strategies already in `strategies`
+(from the seed's four cycles) rather than asking the LLM for a new as-of batch.
+Reason: it gives a larger, already-persisted sample for the selection-bias
+number at no API cost, and the point of the ledger is to re-judge *decisions the
+system actually made*, not hypothetical ones. `seed.py` runs it once, dry, after
+the cycles. A retired strategy that held a real seed-run paper position is
+"closed" on the dry path (an `orders` sell row, status `dry_run`) — the ledger
+is a simulation and must not place or cancel live orders during seeding; the
+real order stays as it is and the dashboard's simulation banner covers the
+discrepancy.
+*Rejected:* generating a fresh as-of batch (API cost, smaller sample, and it
+answers a less interesting question); running the ledger live in `seed.py`
+(a historical replay should not touch the broker).

@@ -6,7 +6,8 @@
 <title>Self-auditing trading agent</title>
 <style>
   :root { --bg:#faf9f7; --fg:#1c1b19; --muted:#6b6862; --line:#e2ded7;
-          --promoted:#0a7c3a; --rejected:#a23b2c; --card:#fff; --accent:#1a4f8a; }
+          --promoted:#0a7c3a; --rejected:#a23b2c; --card:#fff; --accent:#1a4f8a;
+          --retired:#8a6d1a; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
@@ -26,7 +27,7 @@
           font-weight:700; letter-spacing:.03em; }
   .PROMOTED,.promoted { background:#e4f4ea; color:var(--promoted); }
   .REJECTED,.rejected { background:#f7e6e3; color:var(--rejected); }
-  .retired { background:#eee; color:var(--muted); }
+  .RETIRED,.retired { background:#f4ecd8; color:var(--retired); }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
   button { font:inherit; font-weight:600; padding:8px 16px; border:1px solid var(--accent);
            background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; }
@@ -40,6 +41,15 @@
   .overflow { overflow-x:auto; }
   .empty { color:var(--muted); font-style:italic; }
   a { color:var(--accent); }
+  .bias-num { font-size:34px; font-weight:800; letter-spacing:-.01em; margin:2px 0; }
+  .bias-pos { color:var(--promoted); } .bias-neg { color:var(--rejected); }
+  .bias-row { display:flex; gap:32px; flex-wrap:wrap; align-items:baseline; }
+  .bias-side { font-size:13px; color:var(--muted); }
+  .bias-side b { font-size:18px; color:var(--fg); font-weight:700; display:block; }
+  .note { background:#f4f2ee; border-left:3px solid var(--line); padding:8px 12px;
+          font-size:12px; color:var(--muted); margin-top:12px; border-radius:0 4px 4px 0; }
+  .pm { white-space:pre-wrap; font-size:13px; background:#f7f6f3; border-radius:6px;
+        padding:12px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -49,14 +59,26 @@
 </header>
 <main>
 
+  <section id="biasSection">
+    <h2>Selection-bias check — does the gate pick signal or noise?</h2>
+    <div id="bias"><span class="empty">loading…</span></div>
+  </section>
+
   <section>
-    <h2>Promoted strategies — equity curves</h2>
+    <h2>Forward tracking — the gate's picks among the shadows it rejected</h2>
     <div id="hero"><span class="empty">loading…</span></div>
     <div class="legend" id="heroLegend"></div>
-    <div class="sub" style="margin-top:8px">
-      Percent return over the backtest window. Only strategies that cleared the
-      promotion gate are shown. Paper trading, daily bars, IEX data — no alpha is claimed.
+    <div class="note" id="heroNote"></div>
+  </section>
+
+  <section id="retireSection" hidden>
+    <h2>Retirements &amp; post-mortems</h2>
+    <div class="sub" style="margin-bottom:12px">
+      When a rejected shadow beat an active strategy forward — by the policy
+      margin, over a long-enough window, with the active also losing — the agent
+      retired the active one. Each post-mortem is written from the stored numbers only.
     </div>
+    <div id="retirements"></div>
   </section>
 
   <section>
@@ -88,6 +110,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const COLORS = ["#1a4f8a","#0a7c3a","#a23b2c","#8a6d1a","#5b3a8a","#1a7f8a","#8a1a6d"];
+const fmtPct = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%");
 
 async function j(url, opts) {
   const r = await fetch(url, opts);
@@ -107,16 +130,44 @@ async function loadHealth() {
   } catch (e) { $("healthLine").textContent = "health check failed: " + e.message; }
 }
 
+async function loadBias() {
+  try {
+    const b = await j("/api/selection-bias");
+    if (!b.available) {
+      $("bias").innerHTML = `<span class="empty">${esc(b.note || "no as-of evaluation yet")}</span>`;
+      return;
+    }
+    const cls = b.spread_pp >= 0 ? "bias-pos" : "bias-neg";
+    $("bias").innerHTML = `
+      <div class="bias-row">
+        <div>
+          <div class="bias-num ${cls}">${fmtPct(b.spread_pp).replace('%','')} pp</div>
+          <div class="bias-side">promoted forward return − rejected forward return</div>
+        </div>
+        <div class="bias-side">promoted<b>${fmtPct(b.promoted_avg_forward_return_pct)}</b>n = ${b.n_promoted}</div>
+        <div class="bias-side">rejected<b>${fmtPct(b.rejected_avg_forward_return_pct)}</b>n = ${b.n_rejected}</div>
+      </div>
+      <div class="note">
+        As of <b>${esc(b.as_of)}</b>: average forward return of the strategies the gate
+        would have promoted, minus that of the ones it rejected, measured over daily
+        bars the gate never saw. A spread near zero means the gate is not separating
+        signal from noise. This is a historical simulation of forward tracking on a
+        handful of runs — read it next to the sample sizes, not as a track record.
+      </div>`;
+  } catch (e) { $("bias").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
 function heroSVG(series) {
-  const W = 960, H = 320, P = 36;
+  const W = 960, H = 340, P = 38;
   const norm = series.map(s => {
     const pts = (s.points || []).filter(p => typeof p.equity === "number");
     if (pts.length < 2) return null;
     const base = pts[0].equity;
-    return { name: s.name, symbol: s.symbol,
+    return { name: s.name, symbol: s.symbol, status: s.status,
+             decision: s.as_of_decision,
              ys: pts.map(p => (p.equity / base - 1) * 100) };
   }).filter(Boolean);
-  if (!norm.length) return { svg: '<span class="empty">No promoted strategies yet.</span>', legend: "" };
+  if (!norm.length) return { svg: '<span class="empty">No forward-tracking data yet.</span>', legend: "" };
 
   let lo = 0, hi = 0;
   norm.forEach(s => s.ys.forEach(y => { lo = Math.min(lo, y); hi = Math.max(hi, y); }));
@@ -125,37 +176,84 @@ function heroSVG(series) {
   const y = (v) => H - P - ((v - lo) / (hi - lo)) * (H - 2 * P);
   const zeroY = y(0);
 
+  // shadows (rejected) first, thin grey; promoted picks on top, coloured.
+  const shadows = norm.filter(s => s.decision !== "promoted");
+  const picks = norm.filter(s => s.decision === "promoted");
   let paths = "";
-  norm.forEach((s, k) => {
+  shadows.forEach(s => {
     const d = s.ys.map((v, i) => `${i ? "L" : "M"}${x(i, s.ys.length).toFixed(1)},${y(v).toFixed(1)}`).join("");
-    paths += `<path d="${d}" fill="none" stroke="${COLORS[k % COLORS.length]}" stroke-width="2"/>`;
+    paths += `<path d="${d}" fill="none" stroke="#c9c5bd" stroke-width="1.25"/>`;
   });
-  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="equity curves">
+  picks.forEach((s, k) => {
+    const d = s.ys.map((v, i) => `${i ? "L" : "M"}${x(i, s.ys.length).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    const dash = s.status === "retired" ? ' stroke-dasharray="5 3"' : "";
+    paths += `<path d="${d}" fill="none" stroke="${COLORS[k % COLORS.length]}" stroke-width="2.5"${dash}/>`;
+  });
+  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="forward equity curves">
     <line x1="${P}" y1="${zeroY}" x2="${W-P}" y2="${zeroY}" stroke="#bbb" stroke-dasharray="3 3"/>
     <text x="${P}" y="${zeroY-4}" font-size="10" fill="#999">0%</text>
     <text x="${W-P}" y="${y(hi)+10}" font-size="10" fill="#999" text-anchor="end">${hi.toFixed(1)}%</text>
     <text x="${W-P}" y="${y(lo)-2}" font-size="10" fill="#999" text-anchor="end">${lo.toFixed(1)}%</text>
     ${paths}
   </svg>`;
-  const legend = norm.map((s, k) =>
-    `<span style="--c:${COLORS[k % COLORS.length]}">${esc(s.name)} (${esc(s.symbol)})</span>`).join("");
+  const legend =
+    picks.map((s, k) => `<span style="--c:${COLORS[k % COLORS.length]}">${esc(s.name)} (${esc(s.symbol)})`
+      + (s.status === "retired" ? " — retired" : "") + `</span>`).join("")
+    + (shadows.length ? `<span style="--c:#c9c5bd">${shadows.length} rejected shadow${shadows.length>1?"s":""}</span>` : "");
   return { svg, legend };
 }
 
 async function loadHero() {
   try {
-    const { series } = await j("/api/equity-curves");
+    let { series, as_of } = await j("/api/shadow-curves");
+    let note = "";
+    if (!series || !series.length) {
+      const eq = await j("/api/equity-curves");
+      series = (eq.series || []).map(s => ({ ...s, as_of_decision: "promoted" }));
+      note = "Showing plain backtest curves — no as-of forward-tracking run has been recorded yet.";
+    } else {
+      note = `Historical simulation of forward tracking. Every strategy is replayed on the `
+           + `bars AFTER ${esc(as_of)} — data it did not see when the gate judged it. `
+           + `Coloured lines are the strategies the gate promoted at that date; grey lines are `
+           + `the ones it rejected, tracked forward anyway. Percent return from the decision point. `
+           + `This is not weeks of live trading.`;
+    }
     const { svg, legend } = heroSVG(series);
     $("hero").innerHTML = svg;
     $("heroLegend").innerHTML = legend;
+    $("heroNote").innerHTML = note;
   } catch (e) { $("hero").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 
-function metricCell(m) {
+async function loadRetirements() {
+  try {
+    const { retirements } = await j("/api/retirements");
+    if (!retirements.length) {
+      $("retireSection").hidden = false;
+      $("retirements").innerHTML = '<span class="empty">No retirements. At the evaluated '
+        + 'as-of date no rejected shadow beat an active strategy by the policy margin while '
+        + 'that active strategy was also losing forward — so nothing was churned.</span>';
+      return;
+    }
+    $("retireSection").hidden = false;
+    $("retirements").innerHTML = retirements.map(r => `
+      <div class="run-block">
+        <div><span class="pill retired">RETIRED</span>
+          <strong>${esc(r.retired_name)}</strong> → replaced by <strong>${esc(r.promoted_name)}</strong>
+          <span class="sub">(${esc(r.symbol)})</span></div>
+        <div class="sub" style="margin-top:4px">${esc(r.reason)}</div>
+        ${r.close_status ? `<div class="sub">position close via MCP: ${esc(r.close_status)}</div>` : ""}
+        <div class="pm">${esc(r.text)}</div>
+      </div>`).join("");
+  } catch (e) { $("retirements").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
+function metricCell(m, kind) {
   if (!m) return "—";
+  const tag = kind && kind !== "primary" ? ` <span class="sub">(${esc(kind)})</span>` : "";
   return `ret ${m.total_return_pct}% · dd ${m.max_drawdown_pct}% · `
        + `${m.num_trades} trades · win ${m.win_rate_pct}%`
-       + (m.open_position ? " · <em>open</em>" : "");
+       + (m.open_position ? " · <em>open</em>" : "") + tag;
 }
 
 async function loadDecisionLog() {
@@ -165,6 +263,7 @@ async function loadDecisionLog() {
     const details = await Promise.all(runs.slice(0, 12).map(r => j(`/api/runs/${r.id}`)));
     $("decisionLog").innerHTML = details.map(({ run, candidates }) => {
       const when = (run.started_at || "").replace("T", " ").slice(0, 16);
+      const asof = run.as_of ? ` · <strong>as-of ${esc(run.as_of)} forward-tracking simulation</strong>` : "";
       const status = run.finished_at
         ? `${run.n_promoted ?? 0} promoted / ${run.n_rejected ?? 0} rejected`
         : (run.n_generated === -1 ? "failed" : "running…");
@@ -172,11 +271,11 @@ async function loadDecisionLog() {
         <tr>
           <td>${esc(c.name)}<div class="sub">${esc(c.symbol)} · ${esc(c.source)}</div></td>
           <td><span class="pill ${esc(c.outcome)}">${esc(c.outcome.toUpperCase())}</span></td>
-          <td>${metricCell(c.metrics)}</td>
+          <td>${metricCell(c.metrics, c.metrics_kind)}</td>
           <td>${esc(c.reason)}</td>
         </tr>`).join("");
       return `<div class="run-block">
-        <div class="sub"><strong>Run ${run.id}</strong> · ${esc(when)} · ${esc(status)}</div>
+        <div class="sub"><strong>Run ${run.id}</strong> · ${esc(when)} · ${esc(status)}${asof}</div>
         <div class="overflow"><table>
           <tr><th>Candidate</th><th>Verdict</th><th>Backtest</th><th>Reason</th></tr>
           ${rows || '<tr><td colspan="4" class="empty">no candidates</td></tr>'}
@@ -207,7 +306,9 @@ async function loadOrders() {
   } catch (e) { $("ordersTable").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 
-function refreshAll() { loadHealth(); loadHero(); loadDecisionLog(); loadOrders(); }
+function refreshAll() {
+  loadHealth(); loadBias(); loadHero(); loadRetirements(); loadDecisionLog(); loadOrders();
+}
 
 let polling = null;
 async function runCycle() {

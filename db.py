@@ -6,19 +6,20 @@ importing this module and calling ``connect()`` is enough to bootstrap a fresh
 database. We reuse the same file as ``data.py``'s bar cache (``bars_cache.db``)
 so the whole system is one portable file.
 
-Phase 4 (shadow portfolios / regret ledger) attaches here **without a
-migration**:
+Phase 4 (shadow portfolios / regret ledger) mostly reuses what is here:
 
   * A rejected candidate already has a row in ``strategies`` (status
     ``rejected``) and its backtest equity curve in ``backtests``. Replaying a
     shadow forward on new bars is just another ``backtests`` row for the same
-    ``strategy_id`` (a later ``run_id``, a later ``bars_end``).
+    ``strategy_id`` — now tagged ``kind = 'forward'`` with the ``as_of`` split.
   * Retiring an active strategy is ``status = 'retired'`` (already an allowed
     value) plus a ``decisions`` row with outcome ``retired``.
-  * ``decisions`` and ``backtests`` therefore need no new columns for shadows;
-    the CHECK constraints below already permit the Phase 4 values.
 
-No shadow-specific tables are created yet — that is Phase 4's job.
+What Phase 4 *did* add (see D39): ``backtests.kind`` / ``backtests.as_of`` and
+``runs.as_of`` (guarded ``ALTER`` in :func:`_apply_migrations`), and a
+``postmortems`` table for the written retirement explanation (T4.4). The earlier
+"no migration" note (D18) held for the core shadow mechanic; the as-of split
+marker and the post-mortem prose are genuinely new, as D22's tables were.
 """
 
 from __future__ import annotations
@@ -82,6 +83,19 @@ CREATE TABLE IF NOT EXISTS backtests (
 );
 CREATE INDEX IF NOT EXISTS ix_backtests_strategy ON backtests (strategy_id);
 
+-- Phase 4 (T4.4): a written post-mortem stored with every retirement. The LLM
+-- that writes it is fed ONLY the facts_json numbers (D37) — no free narrative.
+CREATE TABLE IF NOT EXISTS postmortems (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id           INTEGER REFERENCES decisions (id),
+    run_id                INTEGER REFERENCES runs (id),
+    retired_strategy_id   INTEGER NOT NULL REFERENCES strategies (id),
+    promoted_strategy_id  INTEGER NOT NULL REFERENCES strategies (id),
+    facts_json            TEXT NOT NULL,
+    text                  TEXT NOT NULL,
+    created_at            TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_id INTEGER NOT NULL REFERENCES strategies (id),
@@ -120,9 +134,33 @@ CREATE TABLE IF NOT EXISTS system_state (
 """
 
 
+# Phase 4 (D39): columns added to existing tables. ``CREATE TABLE IF NOT EXISTS``
+# never adds a column to a table that already exists, so these are applied with a
+# guarded ``ALTER`` — checked against ``PRAGMA table_info`` so it is idempotent
+# and safe on the committed seed.db as it is re-seeded onto the Render volume.
+#   backtests.kind  — 'primary' (a plain cycle backtest), 'insample' (the as-of
+#                     promotion basis) or 'forward' (shadow tracked forward, D34)
+#   backtests.as_of — the as-of date a forward/insample split was taken at
+#   runs.as_of      — set when a run is an as-of forward-tracking simulation
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("backtests", "kind", "ALTER TABLE backtests ADD COLUMN kind TEXT NOT NULL DEFAULT 'primary'"),
+    ("backtests", "as_of", "ALTER TABLE backtests ADD COLUMN as_of TEXT"),
+    ("runs", "as_of", "ALTER TABLE runs ADD COLUMN as_of TEXT"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in _MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(ddl)
+    conn.commit()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Create every table and index if absent. Idempotent — safe on every startup."""
     conn.executescript(_SCHEMA)
+    _apply_migrations(conn)
     conn.commit()
 
 
@@ -247,6 +285,12 @@ def get_run(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
 
 
+def set_run_as_of(conn: sqlite3.Connection, run_id: int, as_of: str) -> None:
+    """Mark a run as an as-of forward-tracking simulation (Phase 4)."""
+    conn.execute("UPDATE runs SET as_of = ? WHERE id = ?", (as_of, run_id))
+    conn.commit()
+
+
 # --- backtests -------------------------------------------------------------
 
 
@@ -259,14 +303,16 @@ def insert_backtest(
     equity_curve_json: str,
     bars_start: str | None = None,
     bars_end: str | None = None,
+    kind: str = "primary",
+    as_of: str | None = None,
 ) -> int:
     cur = conn.execute(
         """INSERT INTO backtests
                (strategy_id, run_id, metrics_json, equity_curve_json,
-                bars_start, bars_end, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                bars_start, bars_end, kind, as_of, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (strategy_id, run_id, metrics_json, equity_curve_json,
-         bars_start, bars_end, _now()),
+         bars_start, bars_end, kind, as_of, _now()),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -294,6 +340,35 @@ def insert_decision(
 
 def list_decisions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM decisions ORDER BY id").fetchall()
+
+
+# --- post-mortems (Phase 4 / T4.4) ------------------------------------------
+
+
+def insert_postmortem(
+    conn: sqlite3.Connection,
+    *,
+    decision_id: int | None,
+    run_id: int | None,
+    retired_strategy_id: int,
+    promoted_strategy_id: int,
+    facts_json: str,
+    text: str,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO postmortems
+               (decision_id, run_id, retired_strategy_id, promoted_strategy_id,
+                facts_json, text, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (decision_id, run_id, retired_strategy_id, promoted_strategy_id,
+         facts_json, text, _now()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_postmortems(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM postmortems ORDER BY id").fetchall()
 
 
 # --- orders -----------------------------------------------------------------

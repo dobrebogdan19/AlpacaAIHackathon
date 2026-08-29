@@ -32,9 +32,19 @@ generates alpha. See [DECISIONS.md](DECISIONS.md) D9.
 5. **Persist** — one SQLite file holds strategies, runs, backtests, decisions,
    and orders (`db.py`).
 
-Phase 4 (the "regret ledger" — shadow portfolios of rejected candidates and
-automatic retirement of an active strategy a shadow beats) is scaffolded in the
-schema but not yet built.
+6. **Regret ledger** (Phase 4) — every rejected candidate is tracked forward as
+   a shadow portfolio from its decision date. When a shadow beats an active
+   strategy forward — by a set margin, over a long-enough window, with the
+   active also losing — the active is retired, the shadow promoted, any held
+   position closed through the MCP path, and a post-mortem (written by the LLM
+   from the real numbers only) stored (`regret.py`, `retire.py`,
+   `postmortem.py`). The **selection-bias check** compares the average forward
+   return of promoted vs rejected candidates — a single number, with its sample
+   size, showing whether the gate is picking signal or noise.
+
+   Because the hackathon window is days, this runs **as-of a fixed past date**
+   so real unseen bars exist after it. It is a historical simulation of forward
+   tracking, labelled as such everywhere — not weeks of live results.
 
 ---
 
@@ -54,7 +64,10 @@ api.py (FastAPI)
   GET  /api/runs, /api/runs/{id}
   GET  /api/strategies, /api/strategies/{id}
   GET  /api/orders
-  GET  /api/equity-curves     latest curve per promoted strategy (the hero plot)
+  GET  /api/equity-curves     latest cycle curve per promoted strategy
+  GET  /api/shadow-curves     forward curves, gate's picks among the shadows (hero)
+  GET  /api/selection-bias    promoted vs rejected mean forward return, with n
+  GET  /api/retirements       retirements + their post-mortems
   POST /api/cycle             runs a cycle in the background, returns a run id
   GET  /api/mcp-check         explicit round trip through the MCP server
 ```
@@ -141,10 +154,16 @@ to a paid instance and uncomment the `disk:` block in `render.yaml`.
   hundred rows. A strategy that clears the gate on this window has cleared a
   low bar; three realised round-trips would be noise, which is why `min_trades`
   is 10 (D21).
-- **Selection bias is not yet measured.** Phase 4 will compare the forward
-  performance of promoted vs rejected candidates and report that number even if
-  it is unflattering (D10). Until then, "promoted" means only "passed the gate
-  on the backtest window", not "works".
+- **Selection bias is measured, and the sample is tiny.** The regret ledger
+  compares the forward return of promoted vs rejected candidates (D38); on the
+  committed seed the spread is **+2.22pp** with **n = 4 promoted / 15 rejected**.
+  Four cycles of candidates is not enough to conclude anything — the number is
+  reported with its `n` precisely so it is not over-read. "Promoted" still means
+  only "passed the gate on its window", not "works".
+- **Forward tracking is a historical simulation.** The regret ledger evaluates
+  "as of" a fixed past date so genuinely unseen bars exist after it. It is not
+  several weeks of live shadow trading, and the code, the API and the dashboard
+  all say so.
 - **No learning.** There is no model training, no weight update, no online
   learning of any kind. The agent selects and retires strategies on stored
   evidence — that is the whole claim (D9).

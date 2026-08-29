@@ -124,20 +124,49 @@ Runner: `cycle.run_cycle(...)` — one function, generate→backtest→gate→ex
 
 ## Phase 4 — Regret ledger
 
-- [ ] **T4.1** Rejected candidates persist as shadow portfolios.
+- [x] **T4.1** Rejected candidates persist as shadow portfolios.
       *Accept:* rejected strategies have equity curves alongside active ones.
-- [ ] **T4.2** Shadow evaluation — replay each shadow forward on new bars.
+      `regret.run_regret_ledger` splits every stored strategy's bars at an as-of
+      date `T0` and stores a forward equity curve (`backtests.kind='forward'`,
+      `as_of=T0`, `bars_start` = the tracking-start bar) for each — rejected and
+      promoted alike. `GET /api/shadow-curves` serves all 19; the dashboard hero
+      plots the gate's picks (coloured) among the rejected shadows (grey).
+- [x] **T4.2** Shadow evaluation — replay each shadow forward on new bars.
       *Accept:* shadows update when new data arrives.
-- [ ] **T4.3** Retirement rule — when a shadow beats an active strategy by
+      Same engine, same D1 semantics, via `engine.run_backtest(start_index=)`
+      (D34) — pre-`T0` bars are warm-up only, the strategy trades from `T0`.
+      Each forward replay is a **new** `backtests` row (never an overwrite), so
+      re-running the ledger preserves history. As-of is an explicit historical
+      simulation of forward tracking (D35), labelled as such everywhere — not
+      several weeks of live results.
+- [x] **T4.3** Retirement rule — when a shadow beats an active strategy by
       a margin over a window, retire the active one and promote the shadow.
       *Accept:* one demonstrable retirement, triggered on historical data.
-- [ ] **T4.4** Post-mortem generation — a written explanation of what was
+      `retire.RETIREMENT_POLICY` (D36): shadow beats active by >5pp forward
+      return, ≥40-bar window, active also ≤0% forward, same symbol. On the
+      committed seed (as of 2026-06-17): **'AMZN Momentum and ATR' retired**
+      (−11.51% forward) in favour of the rejected shadow **'AMZN Volume Surge'**
+      (−2.35%). Active → `retired`, shadow → `active`, a `decisions` row
+      (`outcome='retired'`) records it, the held position is closed through the
+      MCP path (`mcp_client.close_position`; dry on the seed). Visible in the
+      decision log and `GET /api/retirements`.
+- [x] **T4.4** Post-mortem generation — a written explanation of what was
       missed and why, stored with the retirement.
       *Accept:* readable text, grounded in the actual numbers.
-- [ ] **T4.5** Selection-bias check — compare promoted vs rejected average
+      `postmortem.generate_postmortem` — LLM (`gpt-4o-mini`) fed **only** a
+      numeric facts dict (D37), prompt forbids invented narrative; plain-text
+      fallback if the call fails. Stored in the `postmortems` table with its
+      `facts_json`. The seed's post-mortem contrasts the retired strategy's
+      20.71% in-sample / −11.51% forward against the shadow, and names the
+      in-sample metrics the gate over-weighted.
+- [x] **T4.5** Selection-bias check — compare promoted vs rejected average
       forward performance.
       *Accept:* a single number showing whether the gate selects signal
       or noise. Report it honestly even if it is unflattering.
+      `GET /api/selection-bias`, computed from stored forward backtests (D38),
+      shown prominently at the top of the dashboard with a plain-English caption
+      and the sample size. On the committed seed: **+2.22pp** (promoted +2.85%,
+      n=4; rejected +0.63%, n=15) — small sample, reported as-is (D10).
 
 ---
 

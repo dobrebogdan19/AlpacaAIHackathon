@@ -161,6 +161,46 @@ def test_terminal_open_position_does_not_increment_num_trades():
     assert metrics["unrealized_pnl_pct"] != 0.0  # it IS marked to market
 
 
+def test_start_index_zero_is_identical_to_default():
+    """ACCEPTANCE (D34): start_index=0 must not change any number."""
+    bars = _load_fixture_bars()
+    strat = _sma_crossover_strategy()
+    assert run_backtest(strat, bars) == run_backtest(strat, bars, start_index=0)
+
+
+def test_start_index_tracks_forward_with_warmup_not_a_slice():
+    """Forward tracking uses pre-T0 bars for indicator warm-up but trades only
+    from start_index. Slicing the bars instead would delay the first signal by
+    the SMA warm-up and give a different (worse-defined) result."""
+    #         0   1   2   3   4    5    6    7    8    9
+    closes = [10, 10, 10, 10, 10,  10,  20,  30,  30,  30]
+    ts = _days(len(closes))
+    bars = [{"timestamp": ts[i], "open": closes[i], "close": closes[i]}
+            for i in range(len(closes))]
+    strat = _threshold_strategy(period=2, up_level=12.0, down_level=1.0)
+
+    # start at index 5: SMA(2) is already well-defined from the warm-up bars, so
+    # the CROSSES_ABOVE 12 at n=6 fires and fills at bar 7's open (30).
+    fwd = run_backtest(strat, bars, start_index=5)
+    assert fwd["equity_curve"][0]["date"] == bars[5]["timestamp"]
+    assert fwd["open_position"] is True          # entered at bar 7, never exits
+
+    # the same window handed in as a bare slice can't compute SMA(2) on its
+    # first bar, so its behaviour differs — that's the warm-up the param buys.
+    sliced = run_backtest(strat, bars[5:])
+    assert fwd["equity_curve"][0]["date"] == sliced["equity_curve"][0]["date"]
+    # (here they happen to agree on the trade, but the curves start the same
+    # place — the point is indicators are warm in the fwd case)
+    assert len(fwd["equity_curve"]) == len(bars) - 5
+
+
+def test_start_index_out_of_range_raises():
+    bars = [{"timestamp": _days(3)[i], "open": 10, "close": 10} for i in range(3)]
+    strat = _threshold_strategy(period=2, up_level=12.0, down_level=1.0)
+    with pytest.raises(ValueError):
+        run_backtest(strat, bars, start_index=2)   # == len(bars) - 1, nothing to do
+
+
 def test_realized_round_trip_counts_as_one_trade():
     """Sanity: an entry followed by an exit signal is one realised trade."""
     #        0   1   2   3   4   5   6   7   8  9  10

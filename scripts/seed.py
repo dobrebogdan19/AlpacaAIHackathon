@@ -36,6 +36,7 @@ import logging  # noqa: E402
 import cycle  # noqa: E402
 import db  # noqa: E402
 import generator as _generator  # noqa: E402
+import regret as _regret  # noqa: E402
 from schema import Condition, IndicatorName, IndicatorRef, Operator, Rule, Strategy  # noqa: E402
 from seeds import _Gen, generate_with_seeds  # noqa: E402
 
@@ -94,8 +95,18 @@ def main() -> None:
                      res.run_id, res.n_generated, res.n_promoted, res.n_rejected,
                      res.n_orders_submitted)
 
+        # --- Phase 4: the regret ledger, as-of a principled past date (D35) ---
+        # Always dry: this is a historical simulation replayed over stored bars,
+        # not a path that should place or close live orders during seeding.
+        log.info("=== seeding step: regret ledger (as-of forward tracking) ===")
+        rr = _regret.run_regret_ledger(conn=conn, dry_run=True)
+        log.info("  -> regret run %d, as of %s: %d evaluated, %d retirement(s)",
+                 rr.run_id, rr.as_of, len(rr.records), len(rr.retirements))
+        if rr.selection_bias:
+            log.info("  -> %s", rr.selection_bias.headline())
+
         runs = conn.execute(
-            "SELECT id, n_promoted, n_rejected FROM runs ORDER BY id").fetchall()
+            "SELECT id, n_promoted, n_rejected FROM runs WHERE as_of IS NULL ORDER BY id").fetchall()
         promoted_any = any(r["n_promoted"] and r["n_promoted"] > 0 for r in runs)
         rejected_all = any(
             (r["n_promoted"] or 0) == 0 and (r["n_rejected"] or 0) > 0 for r in runs)

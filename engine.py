@@ -178,14 +178,27 @@ def _eval_rule(rule: Rule, bars, n: int) -> bool:
 # --- backtest ---------------------------------------------------------------
 
 
-def run_backtest(strategy: Strategy, bars) -> dict:
+def run_backtest(strategy: Strategy, bars, *, start_index: int = 0) -> dict:
     """Replay `strategy` over `bars` (oldest first). Returns a metrics dict.
 
     `bars` is a list of dicts with at least ``open``/``close`` (and
     ``high``/``low``/``volume`` if the strategy uses ATR / VOLUME_AVG).
+
+    ``start_index`` (default 0 — unchanged behaviour) begins the *trading loop*
+    and the equity curve at ``bars[start_index]``, while indicators are still
+    computed from the full history ``bars[0..n]``. This is how a shadow is
+    tracked forward from its rejection date (Phase 4 / D34): the bars before
+    ``start_index`` are warm-up only — needed so an SMA/EMA/RSI is defined on the
+    first forward bar — and the strategy starts flat there and trades forward.
+    D1 semantics are unchanged: a decision on bar n's close still fills at bar
+    n+1's open, and a signal on the last bar is still dropped.
     """
     if len(bars) < 2:
         raise ValueError("need at least 2 bars to run a backtest")
+    if not 0 <= start_index < len(bars) - 1:
+        raise ValueError(
+            f"start_index {start_index} out of range for {len(bars)} bars"
+        )
 
     closes = [float(b["close"]) for b in bars]
 
@@ -195,7 +208,7 @@ def run_backtest(strategy: Strategy, bars) -> dict:
     trades: list[dict] = []          # realised round-trips: {"entry", "exit", "pnl"}
     equity_curve: list[dict] = []    # {"date", "equity"} mark-to-market at each close
 
-    for n in range(len(bars) - 1):  # -1: bar n+1 must exist for execution
+    for n in range(start_index, len(bars) - 1):  # -1: bar n+1 must exist for execution
         # ----- decision: data up to and including bar n's close only -----
         signal = None
         if shares == 0 and _eval_rule(strategy.entry, bars, n):

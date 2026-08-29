@@ -63,18 +63,46 @@ def _seed(conn):
                        reason="only 2 realised trade(s), 10 required")
     db.finish_run(conn, r2, n_generated=1, n_promoted=0, n_rejected=1)
 
+    # a regret-ledger (as-of) run: s1 promoted-as-of but loses forward, s2
+    # rejected-as-of but wins forward -> a retirement of s1 in favour of s2.
+    r3 = db.start_run(conn)
+    db.set_run_as_of(conn, r3, "2026-06-15")
+    for sid, dec, fwd in ((s1, "promoted", -6.0), (s2, "rejected", 5.5)):
+        db.insert_backtest(conn, strategy_id=sid, run_id=r3,
+                           metrics_json=json.dumps({"total_return_pct": 8.0, "max_drawdown_pct": 5.0,
+                                                    "num_trades": 12, "win_rate_pct": 50.0}),
+                           equity_curve_json=json.dumps([{"date": "2026-02-01", "equity": 10000}]),
+                           bars_start="2026-02-01", bars_end="2026-06-15",
+                           kind="insample", as_of="2026-06-15")
+        db.insert_backtest(conn, strategy_id=sid, run_id=r3,
+                           metrics_json=json.dumps({"total_return_pct": fwd, "max_drawdown_pct": 5.0,
+                                                    "num_trades": 4, "win_rate_pct": 50.0,
+                                                    "forward_bars": 50}),
+                           equity_curve_json=json.dumps([{"date": "2026-06-16", "equity": 10000},
+                                                         {"date": "2026-08-20", "equity": 10000 * (1 + fwd / 100)}]),
+                           bars_start="2026-06-16", bars_end="2026-08-20",
+                           kind="forward", as_of="2026-06-15")
+        db.insert_decision(conn, strategy_id=sid, run_id=r3, outcome=dec,
+                           reason=f"as-of 2026-06-15 gate: {dec}")
+    d_ret = db.insert_decision(conn, strategy_id=s1, run_id=r3, outcome="retired",
+                               reason="shadow 'Slow AAPL' returned +5.50% vs active 'Fast SPY' -6.00%")
+    db.insert_postmortem(conn, decision_id=d_ret, run_id=r3, retired_strategy_id=s1,
+                         promoted_strategy_id=s2, facts_json=json.dumps({"symbol": "SPY"}),
+                         text="The retired strategy looked fine in-sample but lost forward.")
+    db.finish_run(conn, r3, n_generated=2, n_promoted=1, n_rejected=1)
+
 
 def test_health_reports_counts_and_no_network(client):
     h = client.get("/api/health").json()
     assert h["status"] == "ok"
-    assert h["counts"] == {"runs": 2, "strategies": 2, "orders": 1}
+    assert h["counts"] == {"runs": 3, "strategies": 2, "orders": 1}
     assert h["kill_switch"] is False
 
 
 def test_runs_list_newest_first_with_counts(client):
     runs = client.get("/api/runs").json()["runs"]
-    assert [r["id"] for r in runs] == [2, 1]
-    assert runs[1]["n_decisions"] == 1 and runs[1]["n_orders"] == 1
+    assert [r["id"] for r in runs] == [3, 2, 1]
+    assert runs[2]["n_decisions"] == 1 and runs[2]["n_orders"] == 1
 
 
 def test_run_detail_has_every_candidate_with_reason(client):
@@ -113,6 +141,37 @@ def test_equity_curves_only_promoted(client):
     assert len(series) == 1
     assert series[0]["symbol"] == "SPY"
     assert series[0]["points"][-1]["equity"] == 11200
+
+
+def test_shadow_curves_tags_decision_and_status(client):
+    body = client.get("/api/shadow-curves").json()
+    assert body["as_of"] == "2026-06-15"
+    assert body["simulation"] is True
+    assert len(body["series"]) == 2
+    by_name = {s["name"]: s for s in body["series"]}
+    assert by_name["Fast SPY"]["as_of_decision"] == "promoted"
+    assert by_name["Slow AAPL"]["as_of_decision"] == "rejected"
+    assert by_name["Fast SPY"]["tracking_start"] == "2026-06-16"
+    assert by_name["Slow AAPL"]["points"][-1]["equity"] == pytest.approx(10550.0)
+
+
+def test_selection_bias_number_and_sample_size(client):
+    sb = client.get("/api/selection-bias").json()
+    assert sb["available"] is True
+    assert sb["as_of"] == "2026-06-15"
+    assert sb["promoted_avg_forward_return_pct"] == -6.0
+    assert sb["rejected_avg_forward_return_pct"] == 5.5
+    assert sb["n_promoted"] == 1 and sb["n_rejected"] == 1
+    assert sb["spread_pp"] == -11.5
+
+
+def test_retirements_endpoint_carries_postmortem(client):
+    rets = client.get("/api/retirements").json()["retirements"]
+    assert len(rets) == 1
+    assert rets[0]["retired_name"] == "Fast SPY"
+    assert rets[0]["promoted_name"] == "Slow AAPL"
+    assert "lost forward" in rets[0]["text"]
+    assert rets[0]["facts"]["symbol"] == "SPY"
 
 
 def test_dashboard_served(client):
