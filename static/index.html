@@ -12,10 +12,12 @@
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
   header { padding:20px 24px; border-bottom:1px solid var(--line); background:var(--card); }
-  h1 { margin:0 0 4px; font-size:18px; }
+  h1 { margin:0 0 8px; font-size:18px; }
   h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
        margin:0 0 12px; }
   .sub { color:var(--muted); font-size:13px; }
+  .lede { max-width:70ch; font-size:14px; line-height:1.6; margin:0 0 10px; }
+  .lede p { margin:0 0 8px; }
   main { max-width:1040px; margin:0 auto; padding:24px; }
   section { background:var(--card); border:1px solid var(--line); border-radius:8px;
             padding:20px; margin-bottom:20px; }
@@ -50,17 +52,42 @@
           font-size:12px; color:var(--muted); margin-top:12px; border-radius:0 4px 4px 0; }
   .pm { white-space:pre-wrap; font-size:13px; background:#f7f6f3; border-radius:6px;
         padding:12px; margin-top:8px; }
+  details.earlier { margin-top:4px; }
+  details.earlier > summary { cursor:pointer; font-size:13px; color:var(--accent);
+    font-weight:600; padding:6px 0; list-style:revert; }
+  details.earlier[open] > summary { margin-bottom:12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Self-auditing trading agent</h1>
+  <div class="lede">
+    <p>This agent writes candidate trading strategies, backtests each one on historical
+      daily bars, and promotes only those that clear a fixed gate — total return, max
+      drawdown, trade count. Everything it rejects keeps running as a shadow portfolio,
+      tracked forward on data the gate never saw.</p>
+    <p>When a rejected shadow consistently beats a strategy the gate promoted, the agent
+      retires the promoted one and writes a post-mortem. The rejections matter as much as
+      the promotions: they are the control group. Without tracking what it turned down,
+      the agent has no way to tell whether its gate is doing anything at all. Paper
+      trading only.</p>
+  </div>
   <div class="sub" id="healthLine">loading…</div>
 </header>
 <main>
 
+  <section id="retireSection" hidden>
+    <h2>Retirement case study &amp; post-mortem</h2>
+    <div class="sub" style="margin-bottom:12px">
+      When a rejected shadow beat an active strategy forward — by the policy
+      margin, over a long-enough window, with the active also losing — the agent
+      retired the active one. Each post-mortem is written from the stored numbers only.
+    </div>
+    <div id="retirements"></div>
+  </section>
+
   <section id="biasSection">
-    <h2>Selection-bias check — does the gate pick signal or noise?</h2>
+    <h2>Selection-bias check — an instrument, not a verdict</h2>
     <div id="bias"><span class="empty">loading…</span></div>
   </section>
 
@@ -71,14 +98,18 @@
     <div class="note" id="heroNote"></div>
   </section>
 
-  <section id="retireSection" hidden>
-    <h2>Retirements &amp; post-mortems</h2>
+  <section>
+    <h2>Decision log</h2>
     <div class="sub" style="margin-bottom:12px">
-      When a rejected shadow beat an active strategy forward — by the policy
-      margin, over a long-enough window, with the active also losing — the agent
-      retired the active one. Each post-mortem is written from the stored numbers only.
+      Every candidate, with the gate's verdict and its reason. This is the record the
+      agent judges itself on — the full history stays here, most recent run first.
     </div>
-    <div id="retirements"></div>
+    <div id="decisionLog"><span class="empty">loading…</span></div>
+  </section>
+
+  <section>
+    <h2>Orders</h2>
+    <div class="overflow"><div id="ordersTable"><span class="empty">loading…</span></div></div>
   </section>
 
   <section>
@@ -91,19 +122,6 @@
     </div>
   </section>
 
-  <section>
-    <h2>Decision log</h2>
-    <div class="sub" style="margin-bottom:12px">
-      Every candidate, with the gate's verdict and its exact reason. This is the record the agent judges itself on.
-    </div>
-    <div id="decisionLog"><span class="empty">loading…</span></div>
-  </section>
-
-  <section>
-    <h2>Orders</h2>
-    <div class="overflow"><div id="ordersTable"><span class="empty">loading…</span></div></div>
-  </section>
-
 </main>
 
 <script>
@@ -111,6 +129,31 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const COLORS = ["#1a4f8a","#0a7c3a","#a23b2c","#8a6d1a","#5b3a8a","#1a7f8a","#8a1a6d"];
 const fmtPct = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%");
+
+// Presentation-only transform. gate.py still stores the precise machine reason and
+// the API still returns it verbatim — this only rewrites it for display: keep every
+// number, drop the operators and thresholds. Anything it does not recognise is
+// shown unchanged.
+const one = (v) => Number(v).toFixed(1) + "%";
+const signed = (v) => (Number(v) >= 0 ? "+" : "") + Number(v).toFixed(1) + "%";
+function humaniseReason(reason) {
+  if (!reason) return "—";
+  // forward-tracking rows are prefixed "as-of YYYY-MM-DD gate: " — the run header
+  // already states the as-of date, so strip it here.
+  const r = String(reason).replace(/^as-of \d{4}-\d{2}-\d{2} gate:\s*/, "");
+  let m = r.match(/^all thresholds passed: total return (-?[\d.]+)% >= -?[\d.]+%, max drawdown (-?[\d.]+)% <= -?[\d.]+%, (\d+) trades >= \d+/);
+  if (m) return `Passed. ${signed(m[1])} return, ${one(m[2])} max drawdown, ${m[3]} trades.`;
+  return r.split("; ").map(part => {
+    let p;
+    if ((p = part.match(/^total return (-?[\d.]+)% < (-?[\d.]+)% required/)))
+      return `Return too low — ${signed(p[1])}, needs ${one(p[2])}.`;
+    if ((p = part.match(/^max drawdown (-?[\d.]+)% > (-?[\d.]+)% allowed/)))
+      return `Drawdown too deep — ${one(p[1])}, limit ${one(p[2])}.`;
+    if ((p = part.match(/^only (\d+) realised trade\(s\), (\d+) required/)))
+      return `Too few trades — ${p[1]}, needs ${p[2]}.`;
+    return part;
+  }).join(" ");
+}
 
 async function j(url, opts) {
   const r = await fetch(url, opts);
@@ -148,11 +191,13 @@ async function loadBias() {
         <div class="bias-side">rejected<b>${fmtPct(b.rejected_avg_forward_return_pct)}</b>n = ${b.n_rejected}</div>
       </div>
       <div class="note">
-        As of <b>${esc(b.as_of)}</b>: average forward return of the strategies the gate
-        would have promoted, minus that of the ones it rejected, measured over daily
-        bars the gate never saw. A spread near zero means the gate is not separating
-        signal from noise. This is a historical simulation of forward tracking on a
-        handful of runs — read it next to the sample sizes, not as a track record.
+        With n = ${b.n_promoted} promoted against n = ${b.n_rejected} rejected, this
+        sample is far too small to conclude anything about whether the gate picks signal
+        rather than noise. What it does show is that the instrument exists and runs: as of
+        <b>${esc(b.as_of)}</b> every strategy is replayed on the daily bars the gate never
+        saw, and the average forward return of the ones it would have promoted is compared
+        with the ones it rejected. Read the spread as a demonstration of the measurement,
+        not as evidence the gate works (D9/D10).
       </div>`;
   } catch (e) { $("bias").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
@@ -248,12 +293,34 @@ async function loadRetirements() {
   } catch (e) { $("retirements").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 
-function metricCell(m, kind) {
+function metricCell(m) {
   if (!m) return "—";
-  const tag = kind && kind !== "primary" ? ` <span class="sub">(${esc(kind)})</span>` : "";
   return `ret ${m.total_return_pct}% · dd ${m.max_drawdown_pct}% · `
        + `${m.num_trades} trades · win ${m.win_rate_pct}%`
-       + (m.open_position ? " · <em>open</em>" : "") + tag;
+       + (m.open_position ? " · <em>open</em>" : "");
+}
+
+function runBlock({ run, candidates }) {
+  const when = (run.started_at || "").replace("T", " ").slice(0, 16);
+  const asof = run.as_of
+    ? ` · as-of <strong>${esc(run.as_of)}</strong> forward-tracking simulation` : "";
+  const status = run.finished_at
+    ? `${run.n_promoted ?? 0} promoted / ${run.n_rejected ?? 0} rejected`
+    : (run.n_generated === -1 ? "failed" : "running…");
+  const rows = candidates.map(c => `
+    <tr>
+      <td>${esc(c.name)}<div class="sub">${esc(c.symbol)} · ${esc(c.source)}</div></td>
+      <td><span class="pill ${esc(c.outcome)}">${esc(c.outcome.toUpperCase())}</span></td>
+      <td>${metricCell(c.metrics)}</td>
+      <td>${esc(humaniseReason(c.reason))}</td>
+    </tr>`).join("");
+  return `<div class="run-block">
+    <div class="sub"><strong>Run ${run.id}</strong> · ${esc(when)} · ${esc(status)}${asof}</div>
+    <div class="overflow"><table>
+      <tr><th>Candidate</th><th>Verdict</th><th>Backtest</th><th>Reason</th></tr>
+      ${rows || '<tr><td colspan="4" class="empty">no candidates</td></tr>'}
+    </table></div>
+  </div>`;
 }
 
 async function loadDecisionLog() {
@@ -261,27 +328,11 @@ async function loadDecisionLog() {
     const { runs } = await j("/api/runs");
     if (!runs.length) { $("decisionLog").innerHTML = '<span class="empty">No runs yet.</span>'; return; }
     const details = await Promise.all(runs.slice(0, 12).map(r => j(`/api/runs/${r.id}`)));
-    $("decisionLog").innerHTML = details.map(({ run, candidates }) => {
-      const when = (run.started_at || "").replace("T", " ").slice(0, 16);
-      const asof = run.as_of ? ` · <strong>as-of ${esc(run.as_of)} forward-tracking simulation</strong>` : "";
-      const status = run.finished_at
-        ? `${run.n_promoted ?? 0} promoted / ${run.n_rejected ?? 0} rejected`
-        : (run.n_generated === -1 ? "failed" : "running…");
-      const rows = candidates.map(c => `
-        <tr>
-          <td>${esc(c.name)}<div class="sub">${esc(c.symbol)} · ${esc(c.source)}</div></td>
-          <td><span class="pill ${esc(c.outcome)}">${esc(c.outcome.toUpperCase())}</span></td>
-          <td>${metricCell(c.metrics, c.metrics_kind)}</td>
-          <td>${esc(c.reason)}</td>
-        </tr>`).join("");
-      return `<div class="run-block">
-        <div class="sub"><strong>Run ${run.id}</strong> · ${esc(when)} · ${esc(status)}${asof}</div>
-        <div class="overflow"><table>
-          <tr><th>Candidate</th><th>Verdict</th><th>Backtest</th><th>Reason</th></tr>
-          ${rows || '<tr><td colspan="4" class="empty">no candidates</td></tr>'}
-        </table></div>
-      </div>`;
-    }).join("");
+    const blocks = details.map(runBlock);
+    const earlier = blocks.slice(1);
+    $("decisionLog").innerHTML = blocks[0] + (earlier.length
+      ? `<details class="earlier"><summary>Show earlier runs (${earlier.length})</summary>${earlier.join("")}</details>`
+      : "");
   } catch (e) { $("decisionLog").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 

@@ -460,3 +460,29 @@ discrepancy.
 *Rejected:* generating a fresh as-of batch (API cost, smaller sample, and it
 answers a less interesting question); running the ledger live in `seed.py`
 (a historical replay should not touch the broker).
+
+
+### D41 — Dashboard is presentation-only reordered; machine reasons stay in the store
+
+The dashboard opened with the selection-bias number and led with a full-height
+decision log. Reordered to title + lede -> retirement case study -> selection
+bias -> forward-tracking hero -> decision log -> orders -> run button: a concrete
+retirement story lands before any statistic, and the selection-bias number only
+means something once the reader knows the gate. Added a 2-paragraph lede so a
+judge can understand the project without scrolling. Decision log now shows the
+most recent run expanded with earlier runs behind a plain `<details>` toggle —
+the full record stays on the page.
+
+Verdict reasons are humanised **in `static/index.html` only** — `gate.py` still
+stores the precise machine string ("all thresholds passed: total return 19.03%
+>= 0.00%, ...") and the API still returns it verbatim; a JS transform rewrites
+it for display ("Passed. +19.0% return, 8.9% max drawdown, 23 trades."), keeps
+every number, drops operators/thresholds, and strips the "as-of DATE gate:"
+row prefix (the run header states the as-of once). Unrecognised strings pass
+through unchanged. The selection-bias caption was rewritten so the honest
+reading leads: n is far too small to conclude anything; the claim is that the
+instrument exists, not that the gate is proven to select signal (D9/D10).
+
+*Rejected:* changing the stored reason format or adding a display field to the
+API (the constraint was presentation-only); a JS framework or build step for the
+collapse (a native `<details>` does it).
