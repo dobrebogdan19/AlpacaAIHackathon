@@ -94,6 +94,7 @@
   .legend span { display:inline-flex; align-items:center; }
   .legend span::before { content:""; width:15px; height:3px; border-radius:2px;
     margin-right:6px; background:var(--c,var(--accent)); }
+  .legend span.band::before { height:9px; opacity:.4; }
 
   /* ---- tables ------------------------------------------------------- */
   .overflow { overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -108,13 +109,15 @@
   table tr:hover td { background:var(--accent-tint); }
   td .sub { font-size:.8125rem; }
 
-  /* numeric columns: tabular figures, right-aligned */
-  #decisionLog table th:nth-child(3), #decisionLog table td:nth-child(3) { text-align:right; }
+  /* decision log: fixed columns so the Reason column — the evidence — is never clipped */
+  #decisionLog table { table-layout:fixed; min-width:660px; }
+  #decisionLog table th:nth-child(1), #decisionLog table td:nth-child(1) { width:18%; }
+  #decisionLog table th:nth-child(2), #decisionLog table td:nth-child(2) { width:7rem; text-align:center; }
+  #decisionLog table th:nth-child(3), #decisionLog table td:nth-child(3) { width:27%; }
   #decisionLog table td:nth-child(3) { font-family:var(--mono); font-size:.75rem;
-    font-variant-numeric:tabular-nums; color:var(--fg-2); white-space:nowrap; }
-  #decisionLog table th:nth-child(2), #decisionLog table td:nth-child(2) { white-space:nowrap; }
-  #decisionLog table td:nth-child(2) .pill { min-width:6rem; text-align:center; }
-  #decisionLog table td:nth-child(4) { min-width:15rem; color:var(--fg-2); }
+    font-variant-numeric:tabular-nums; color:var(--fg-2); }
+  #decisionLog table td:nth-child(4) { color:var(--fg-2); }
+  #decisionLog table td { overflow-wrap:break-word; }
   #ordersTable table th:first-child, #ordersTable table td:first-child {
     text-align:right; width:3rem; color:var(--muted); font-variant-numeric:tabular-nums; }
 
@@ -307,49 +310,154 @@ async function loadBias() {
   } catch (e) { $("bias").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 
-function heroSVG(series) {
-  const W = 960, H = 340, P = 38;
+// Hero-chart palette: the existing accent set, minus the verdict green/red
+// (those stay reserved for PROMOTED/REJECTED pills).
+const HERO_LINES = ["#1a4f8a", "#5b3a8a", "#1a7f8a", "#8a1a6d", "#8a6d1a"];
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const fmtDay = (t) => { const d = new Date(t); return MON[d.getUTCMonth()] + " " + d.getUTCDate(); };
+const niceStep = (raw) => {
+  const r = raw > 0 ? raw : 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(r)));
+  const n = r / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
+};
+
+function heroSVG(series, asOf) {
+  const W = 960, H = 500, M = { t: 26, r: 194, b: 46, l: 48 };
+  const plotW = W - M.l - M.r, plotH = H - M.t - M.b, baseY = M.t + plotH;
+
   const norm = series.map(s => {
-    const pts = (s.points || []).filter(p => typeof p.equity === "number");
+    const pts = (s.points || []).filter(
+      p => typeof p.equity === "number" && p.date && !Number.isNaN(Date.parse(p.date)));
     if (pts.length < 2) return null;
     const base = pts[0].equity;
-    return { name: s.name, symbol: s.symbol, status: s.status,
-             decision: s.as_of_decision,
-             ys: pts.map(p => (p.equity / base - 1) * 100) };
+    return {
+      name: s.name, symbol: s.symbol, status: s.status, decision: s.as_of_decision,
+      pts: pts.map(p => ({ t: Date.parse(p.date), y: (p.equity / base - 1) * 100 })),
+    };
   }).filter(Boolean);
-  if (!norm.length) return { svg: '<span class="empty">No forward-tracking data yet.</span>', legend: "" };
+  if (!norm.length)
+    return { svg: '<span class="empty">No forward-tracking data yet.</span>', legend: "" };
 
-  let lo = 0, hi = 0;
-  norm.forEach(s => s.ys.forEach(y => { lo = Math.min(lo, y); hi = Math.max(hi, y); }));
-  const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
-  const x = (i, n) => P + (i / (n - 1)) * (W - 2 * P);
-  const y = (v) => H - P - ((v - lo) / (hi - lo)) * (H - 2 * P);
-  const zeroY = y(0);
-
-  // shadows (rejected) first, thin grey; promoted picks on top, coloured.
-  const shadows = norm.filter(s => s.decision !== "promoted");
   const picks = norm.filter(s => s.decision === "promoted");
-  let paths = "";
-  shadows.forEach(s => {
-    const d = s.ys.map((v, i) => `${i ? "L" : "M"}${x(i, s.ys.length).toFixed(1)},${y(v).toFixed(1)}`).join("");
-    paths += `<path d="${d}" fill="none" stroke="#c9c5bd" stroke-width="1.25"/>`;
-  });
+  const shadows = norm.filter(s => s.decision !== "promoted");
+  shadows.forEach(s => { s.at = new Map(s.pts.map(p => [p.t, p.y])); });
+
+  let tMin = Infinity, tMax = -Infinity, lo = 0, hi = 0;
+  norm.forEach(s => s.pts.forEach(p => {
+    if (p.t < tMin) tMin = p.t; if (p.t > tMax) tMax = p.t;
+    if (p.y < lo) lo = p.y; if (p.y > hi) hi = p.y;
+  }));
+  const yPad = ((hi - lo) || 1) * 0.06;
+  lo -= yPad; hi += yPad;
+  const asOfT = asOf ? Date.parse(asOf) : tMin;
+
+  const X = t => M.l + (tMax === tMin ? 0 : (t - tMin) / (tMax - tMin)) * plotW;
+  const Y = v => M.t + (1 - (v - lo) / (hi - lo)) * plotH;
+
+  // gridlines + y-axis labels, in percent
+  const step = niceStep((hi - lo) / 5);
+  let grid = "";
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    if (Math.abs(v) < 1e-9) continue;            // the zero line is drawn on top of the band
+    const gy = Y(v).toFixed(1);
+    grid += `<line x1="${M.l}" x2="${W - M.r}" y1="${gy}" y2="${gy}" stroke="#e6e2da"/>`
+          + `<text x="${M.l - 9}" y="${gy}" font-size="11" fill="#75726b" text-anchor="end" `
+          + `dominant-baseline="middle">${(v > 0 ? "+" : "") + Math.round(v)}%</text>`;
+  }
+
+  // axes + x-axis date ticks
+  let axes = `<line x1="${M.l}" x2="${M.l}" y1="${M.t}" y2="${baseY}" stroke="#d8d2c7"/>`
+           + `<line x1="${M.l}" x2="${W - M.r}" y1="${baseY}" y2="${baseY}" stroke="#d8d2c7"/>`;
+  const NT = 4;
+  for (let i = 0; i < NT; i++) {
+    const t = tMin + (tMax - tMin) * i / (NT - 1);
+    const tx = X(t).toFixed(1);
+    axes += `<line x1="${tx}" x2="${tx}" y1="${baseY}" y2="${baseY + 5}" stroke="#d8d2c7"/>`
+          + `<text x="${tx}" y="${baseY + 19}" font-size="11" fill="#75726b" `
+          + `text-anchor="${i === 0 ? "start" : i === NT - 1 ? "end" : "middle"}">${fmtDay(t)}</text>`;
+  }
+
+  // rejected shadows collapsed to one min–max band + a median line
+  let band = "";
+  if (shadows.length) {
+    const ts = [...new Set([].concat(...shadows.map(s => s.pts.map(p => p.t))))].sort((a, b) => a - b);
+    const rows = ts.map(t => {
+      const vals = [];
+      for (const s of shadows) { const v = s.at.get(t); if (v != null) vals.push(v); }
+      if (!vals.length) return null;
+      return { t, mn: Math.min(...vals), mx: Math.max(...vals) };
+    }).filter(Boolean);
+    if (rows.length > 1) {
+      const up = rows.map(d => `${X(d.t).toFixed(1)},${Y(d.mx).toFixed(1)}`);
+      const dn = rows.slice().reverse().map(d => `${X(d.t).toFixed(1)},${Y(d.mn).toFixed(1)}`);
+      band = `<polygon points="${up.concat(dn).join(" ")}" fill="#7d786f" fill-opacity="0.15" `
+           + `stroke="#7d786f" stroke-opacity="0.3"/>`;
+    }
+  }
+
+  // zero baseline — drawn over the band, clearly marked
+  const zy = Y(0).toFixed(1);
+  const zero = `<line x1="${M.l}" x2="${W - M.r}" y1="${zy}" y2="${zy}" stroke="#3f3d39" stroke-width="1.4"/>`
+             + `<text x="${M.l - 9}" y="${zy}" font-size="11" fill="#3f3d39" font-weight="600" `
+             + `text-anchor="end" dominant-baseline="middle">0%</text>`;
+
+  // as-of marker — where forward tracking begins
+  let asOfMark = "";
+  if (asOf) {
+    const axv = Math.max(M.l, Math.min(W - M.r, X(asOfT)));
+    asOfMark =
+        `<line x1="${axv.toFixed(1)}" x2="${axv.toFixed(1)}" y1="${M.t}" y2="${baseY}" `
+      + `stroke="#1a4f8a" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"/>`
+      + `<text x="${(axv + 5).toFixed(1)}" y="${M.t + 11}" font-size="10.5" fill="#1a4f8a" `
+      + `font-weight="600">as-of ${fmtDay(asOfT)}</text>`;
+  }
+
+  // promoted picks — thick coloured lines on top; retired one dashed
+  let lines = "";
   picks.forEach((s, k) => {
-    const d = s.ys.map((v, i) => `${i ? "L" : "M"}${x(i, s.ys.length).toFixed(1)},${y(v).toFixed(1)}`).join("");
-    const dash = s.status === "retired" ? ' stroke-dasharray="5 3"' : "";
-    paths += `<path d="${d}" fill="none" stroke="${COLORS[k % COLORS.length]}" stroke-width="2.5"${dash}/>`;
+    const c = HERO_LINES[k % HERO_LINES.length];
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+    const dash = s.status === "retired" ? ` stroke-dasharray="9 5"` : "";
+    lines += `<path d="${d}" fill="none" stroke="${c}" stroke-width="3" `
+           + `stroke-linejoin="round" stroke-linecap="round"${dash}/>`;
   });
-  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="forward equity curves">
-    <line x1="${P}" y1="${zeroY}" x2="${W-P}" y2="${zeroY}" stroke="#bbb" stroke-dasharray="3 3"/>
-    <text x="${P}" y="${zeroY-4}" font-size="10" fill="#999">0%</text>
-    <text x="${W-P}" y="${y(hi)+10}" font-size="10" fill="#999" text-anchor="end">${hi.toFixed(1)}%</text>
-    <text x="${W-P}" y="${y(lo)-2}" font-size="10" fill="#999" text-anchor="end">${lo.toFixed(1)}%</text>
-    ${paths}
-  </svg>`;
-  const legend =
-    picks.map((s, k) => `<span style="--c:${COLORS[k % COLORS.length]}">${esc(s.name)} (${esc(s.symbol)})`
-      + (s.status === "retired" ? " — retired" : "") + `</span>`).join("")
-    + (shadows.length ? `<span style="--c:#c9c5bd">${shadows.length} rejected shadow${shadows.length>1?"s":""}</span>` : "");
+
+  // labels at the right-hand end of each pick, nudged apart to avoid overlap
+  const trunc = (str, n) => (str.length > n ? str.slice(0, n - 1) + "…" : str);
+  const lab = picks.map((s, k) => {
+    const last = s.pts[s.pts.length - 1];
+    return { c: HERO_LINES[k % HERO_LINES.length], ox: X(last.t), oy: Y(last.y), y: Y(last.y),
+             name: trunc(s.name, 26), full: s.name,
+             meta: s.symbol + (s.status === "retired" ? " · retired" : "") };
+  }).sort((a, b) => a.oy - b.oy);
+  const GAP = 27;
+  for (let i = 1; i < lab.length; i++)
+    if (lab[i].y - lab[i - 1].y < GAP) lab[i].y = lab[i - 1].y + GAP;
+  for (let i = lab.length - 1; i > 0; i--) {
+    if (lab[i].y > baseY) lab[i].y = baseY;
+    if (lab[i - 1].y > lab[i].y - GAP) lab[i - 1].y = lab[i].y - GAP;
+  }
+  let labels = "";
+  lab.forEach(d => {
+    const lx = (W - M.r + 12).toFixed(1);
+    labels += `<circle cx="${d.ox.toFixed(1)}" cy="${d.oy.toFixed(1)}" r="2.6" fill="${d.c}"/>`;
+    if (Math.abs(d.y - d.oy) > 1)
+      labels += `<path d="M${d.ox.toFixed(1)},${d.oy.toFixed(1)}L${(W - M.r + 6).toFixed(1)},${d.y.toFixed(1)}" `
+              + `fill="none" stroke="${d.c}" stroke-width="1" opacity="0.45"/>`;
+    labels += `<text x="${lx}" y="${(d.y - 2).toFixed(1)}" font-size="12" font-weight="600" fill="${d.c}">`
+            + `${esc(d.name)}<title>${esc(d.full)}</title></text>`
+            + `<text x="${lx}" y="${(d.y + 11).toFixed(1)}" font-size="10" fill="#75726b">${esc(d.meta)}</text>`;
+  });
+
+  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" `
+    + `aria-label="Forward returns of the gate's promoted picks against the min-max range of the rejected shadows">`
+    + grid + axes + band + zero + asOfMark + lines + labels + `</svg>`;
+
+  const legend = shadows.length
+    ? `<span class="band" style="--c:#7d786f">Shaded band: full min–max range of the `
+      + `${shadows.length} rejected shadows, tracked forward</span>`
+    : "";
   return { svg, legend };
 }
 
@@ -364,11 +472,11 @@ async function loadHero() {
     } else {
       note = `Historical simulation of forward tracking. Every strategy is replayed on the `
            + `bars AFTER ${esc(as_of)} — data it did not see when the gate judged it. `
-           + `Coloured lines are the strategies the gate promoted at that date; grey lines are `
-           + `the ones it rejected, tracked forward anyway. Percent return from the decision point. `
+           + `Coloured lines are the strategies the gate promoted at that date; the grey band `
+           + `spans the min–max range of the ones it rejected. Percent return from the decision point. `
            + `This is not weeks of live trading.`;
     }
-    const { svg, legend } = heroSVG(series);
+    const { svg, legend } = heroSVG(series, as_of);
     $("hero").innerHTML = svg;
     $("heroLegend").innerHTML = legend;
     $("heroNote").innerHTML = note;

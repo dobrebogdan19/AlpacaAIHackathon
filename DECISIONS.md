@@ -511,3 +511,30 @@ shout/whisper.
 concept is instead "sans for the agent's prose, mono for its evidence");
 keeping uniform section cards (no hierarchy); recolouring the chart lines in JS
 (logic left untouched; the primary pick line is already the accent).
+
+
+### D43 — Hero chart: one min–max band for the shadows, direct-labelled pick lines
+
+`static/index.html` only, `heroSVG` rewritten (no API/logic/copy change beyond
+the chart's own legend + the one now-stale clause in its caption). The old chart
+drew 19 near-flat lines indexed by position in a 340px box — spaghetti, no
+orientation. Now: (1) the ~15 rejected shadows collapse to a single shaded
+min–max envelope (grey, plotted by real date); (2) the promoted picks draw on
+top as 3px lines from the existing accent set (verdict green/red still excluded);
+(3) viewBox is 960×500 so the shapes have vertical room; (4) added a marked zero
+baseline, "nice"-stepped percent gridlines with labels, an as-of vertical marker
+at the forward-tracking start, and four x-axis date ticks; (5) each pick is
+labelled at its right-hand endpoint (collision-nudged) instead of in a legend
+below — the legend keeps only a one-line band caption; (6) the retired pick is
+dashed, so the retirement shows in the chart, not only the case-study card.
+All still inline SVG, no library.
+
+Also fixed a regression from D42: the decision-log Reason column was clipping
+under auto table-layout because the Backtest column's `white-space:nowrap` ate
+the width. The table is now `table-layout:fixed` with explicit column widths
+(Reason takes the remainder and wraps freely) and `min-width:660px` so it
+scrolls rather than crushes on a phone.
+*Rejected:* keeping individual shadow lines but thinning them (still unreadable);
+a median/quartile line inside the band (extra dashed line competes with the
+"dashed = retired" signal — the brief asked for one envelope); a JS charting
+lib (constraint).
