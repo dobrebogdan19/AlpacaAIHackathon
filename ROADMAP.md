@@ -141,39 +141,40 @@ Runner: `cycle.run_cycle(...)` — one function, generate→backtest→gate→ex
       several weeks of live results.
 - [x] **T4.3** Retirement rule — when a shadow beats an active strategy by
       a margin over a window, retire the active one and promote the shadow.
-      *Accept:* one demonstrable retirement, triggered on historical data.
-      `retire.RETIREMENT_POLICY` (D36): shadow beats active by >5pp forward
-      return, ≥40-bar window, active also ≤0% forward, same symbol. On the
-      committed seed (as of 2026-06-17): **'GOOG Fast Entry' retired**
-      (−5.42% forward — bought GOOG and rode an unexited position down) in favour
-      of the rejected shadow **'GOOG Slow Trend Following'** (+0.00%; it never
-      fired a signal). A thinner case than the earlier AMZN one — the winning
-      shadow is inert and both GOOG strategies made 0 realised forward trades —
-      but it fires the rule honestly: the promoted strategy lost money and a
-      rejected alternative did not. Active → `retired`, shadow → `active`, a
-      `decisions` row (`outcome='retired'`) records it, the held position is
-      closed through the MCP path (`mcp_client.close_position`; dry on the seed).
-      Visible in the decision log and `GET /api/retirements`.
+      *Accept:* the rule is demonstrable on historical data (it fires when its
+      conditions are met; whether the committed seed contains such a case is
+      left to the data — D45).
+      `retire.RETIREMENT_POLICY` (D36 + D45): shadow beats active by >5pp forward
+      return, ≥40-bar window, active also ≤0% forward, **shadow made ≥1 realised
+      forward trade**, same symbol. On the committed seed (as of 2026-06-17):
+      **no retirement fires.** The only candidate clearing the return margin is a
+      losing GOOG active (`GOOG Momentum Breakout`, −7.60% fwd, 5 trades) vs a
+      rejected GOOG shadow (`GOOG RSI Overbought`, +0.00% fwd) — blocked by the
+      ≥1-trade condition because that shadow never traded (it "beat" the active
+      only by sitting in cash). Presented as an honest null result (D10): the
+      rule and the fact that nothing met it. Mechanics still wired end to end
+      (`decisions` row `outcome='retired'`, MCP position close, post-mortem) and
+      covered by `test_retire.py`.
 - [x] **T4.4** Post-mortem generation — a written explanation of what was
       missed and why, stored with the retirement.
       *Accept:* readable text, grounded in the actual numbers.
       `postmortem.generate_postmortem` — LLM (`gpt-4o-mini`) fed **only** a
       numeric facts dict (D37), prompt forbids invented narrative; plain-text
       fallback if the call fails. Stored in the `postmortems` table with its
-      `facts_json`. The seed's post-mortem contrasts the retired strategy's
-      114.22% in-sample / −5.42% forward against the shadow, and names the
-      in-sample metric the gate over-weighted (a 20.5% in-sample drawdown).
+      `facts_json`. Exercised by `test_postmortem.py` and by `scripts/seed.py`
+      when a retirement fires; the current committed seed has no retirement (D45),
+      so no post-mortem row.
 - [x] **T4.5** Selection-bias check — compare promoted vs rejected average
       forward performance.
       *Accept:* a single number showing whether the gate selects signal
       or noise. Report it honestly even if it is unflattering.
       `GET /api/selection-bias`, computed from stored forward backtests (D38),
       shown prominently at the top of the dashboard with a plain-English caption
-      and the sample size. On the committed seed: **+4.64pp** (promoted +5.66%,
-      n=12; rejected +1.02%, n=63) across 24 symbols — larger sample than the
-      first pass (was +2.22pp, n=4/15), gap widened slightly, still small on the
-      promoted side and wide dispersion both ways (median spread +2.7pp; the gate
-      rejected the two biggest forward winners). Reported as-is (D10). See D44.
+      and the sample size. On the committed seed: **+3.85pp mean / +3.62pp
+      median** (promoted +4.46%, n=8; rejected +0.61%, n=66) across 24 symbols.
+      Small promoted sample, wide dispersion both ways, and the gate rejected the
+      two biggest forward winners (both MSFT, +26–29%). Reported as-is (D10).
+      See D44 / D45.
 
 ---
 
@@ -252,7 +253,7 @@ SVG (D29). Served at `/` by `api.py`.
       (0% → +400% if execution moves to the decision bar) and the 92-test suite,
       a file-by-file architecture table (no diagram), local setup referencing
       `.env.example`, and an unsoftened limitations section (IEX not SIP, daily
-      bars, as-of simulation not live results, selection-bias n=12 vs n=63, paper
+      bars, as-of simulation not live results, selection-bias n=8 vs n=66, paper
       only, no learning per D9).
 
 ---

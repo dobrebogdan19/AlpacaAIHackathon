@@ -488,9 +488,11 @@ async function loadRetirements() {
     const { retirements } = await j("/api/retirements");
     if (!retirements.length) {
       $("retireSection").hidden = false;
-      $("retirements").innerHTML = '<span class="empty">No retirements. At the evaluated '
-        + 'as-of date no rejected shadow beat an active strategy by the policy margin while '
-        + 'that active strategy was also losing forward — so nothing was churned.</span>';
+      $("retirements").innerHTML = '<span class="empty">No retirements at the evaluated '
+        + 'as-of date. The rule needs a rejected shadow that (1) beat a losing active by the '
+        + 'policy margin forward and (2) actually traded forward — a shadow that "won" only by '
+        + 'sitting in cash does not count. One case cleared (1) but not (2), so nothing was '
+        + 'churned. The rule and its outcome are both reported as-is.</span>';
       return;
     }
     $("retireSection").hidden = false;

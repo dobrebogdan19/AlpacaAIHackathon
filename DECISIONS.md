@@ -587,3 +587,54 @@ to the decision log for no gain — the ledger re-judges them regardless); leavi
 `as_of` auto-picked (today advancing would drift the date and break comparability
 with the first run); re-seeding until the retirement looked stronger (exactly the
 selection bias this project measures — D35).
+
+
+### D45 — Retirement requires the winning shadow to have actually traded forward
+
+D44's retirement (`GOOG Fast Entry` → `GOOG Slow Trend Following`) had an inert
+winner: the shadow that "beat" the losing active made **zero** realised trades,
+in-sample or forward. It won by sitting in cash. That is a technicality, not a
+demonstrable replacement — asked "what did the new strategy do?", the honest
+answer is "nothing", and the case collapses under a judge's question.
+
+`retire.RETIREMENT_POLICY` gains a fourth knob, `min_shadow_forward_trades = 1`:
+a rejected shadow is only eligible to retire an active if it made at least that
+many realised trades in the forward window. `ShadowRecord.forward_trades` reads
+`forward_metrics["num_trades"]` (realised round-trips only, per D11 — a still-open
+position does not count). The retirement `reason` string now states the winner's
+forward trade count. Two tests added (`test_retire.py`): an inert shadow does not
+retire; given an inert and a trading shadow, the trading one is used. 94 tests
+pass (was 92).
+
+**Outcome on the re-seed** (as of 2026-06-17, same 24×3 batch procedure as D44,
+run exactly once — the batch was *not* searched for a better case):
+* 74 strategies evaluated. **No retirement fires.** The only case clearing the
+  return-margin + active-losing conditions: active `GOOG Momentum Breakout`
+  (as-of promoted; in-sample +17.07% / 18 trades / 18.4% DD; forward **−7.60%** /
+  5 trades over 50 bars) vs rejected shadow `GOOG RSI Overbought` (in-sample
+  +0.00% / 0 trades — rejected as-of for "0 realised trades"; forward **+0.00%
+  / 0 trades**). Margin +7.6pp > 5pp, active < 0 — but blocked by the new
+  ≥1-forward-trade condition. The other losing active (`Momentum and Volume
+  Surge`, V, −2.80%) had no same-symbol shadow beating it by 5pp.
+* Selection bias: **+3.85pp mean, +3.62pp median** — promoted +4.46% (n=8),
+  rejected +0.61% (n=66). The gate rejected the two largest forward winners:
+  `MSFT Fast EMA Crossover` +28.82% and `MSFT RSI Overbought Oversold` +26.01%
+  (both 1 forward trade). Still not evidence the gate selects signal.
+
+**Pitch stance (D10):** present the strict rule and the null result. "We tightened
+the retirement bar so a do-nothing shadow can't trigger it, and on our seed
+nothing clears the stricter bar" is more credible than a retirement we would have
+to caveat on stage. The retirement *mechanism* is fully built and tested; whether
+a given dataset contains a qualifying case is left to the data (D35).
+
+*Note:* re-seeding re-rolls all LLM output, so these strategies differ from
+D44's. On this run the plain-LLM dry step (seed cycle 3) returned no valid
+candidates — a transient model failure — leaving an empty run 3 in the decision
+log. Cosmetic only; the seed's promote/reject guarantees still hold. Not
+re-rolled to fix it (would be indistinguishable from searching for a nicer
+selection-bias number).
+*Rejected:* keeping the 0-trade shadow eligible (D44's problem); requiring the
+shadow to also clear the *full* promotion gate forward (too strict — the point is
+that a rejected candidate did better, not that it was secretly great); searching
+seeds/dates for one that yields a retirement under the strict rule (D35 — the
+exact bias this project exists to measure).

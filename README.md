@@ -39,10 +39,11 @@ Built for the Alpaca AI Trading Agents Hackathon (lablab.ai).
    mean forward return of promoted vs rejected candidates: one number, reported
    with its sample size. (`regret.py`)
 6. **Retire** — when a shadow beats a live strategy forward by a set margin, over
-   a long-enough window, with the live strategy also losing, the live one is
-   retired, the shadow promoted, any held position closed via MCP, and an LLM
-   post-mortem (fed only the real numbers) is stored. (`retire.py`,
-   `postmortem.py`)
+   a long-enough window, with the live strategy also losing *and the shadow
+   having actually traded forward*, the live one is retired, the shadow promoted,
+   any held position closed via MCP, and an LLM post-mortem (fed only the real
+   numbers) is stored. On the committed seed no case clears all four conditions
+   (see the limitations section). (`retire.py`, `postmortem.py`)
 
 ---
 
@@ -157,13 +158,19 @@ Read this section. It is not boilerplate.
   a fixed past date (2026-06-17 on the committed seed) so genuinely unseen bars
   exist after it. This is **not** weeks of live shadow trading. The code, the
   API and the dashboard all label it as a simulation.
-- **The selection-bias number has n = 12 vs n = 63.** On the committed seed the
-  promoted-minus-rejected forward spread is +4.64pp (promoted +5.66%, n = 12;
-  rejected +1.02%, n = 63), across 24 symbols. Still a small promoted sample, and
-  the dispersion is wide both ways — the gate rejected the two biggest forward
-  winners (both MSFT, +27–29%) and the median spread is only +2.7pp. The number
-  exists to show the instrument works — not to claim the gate selects signal.
-  "Promoted" still means only "passed the gate on its window".
+- **The selection-bias number has n = 8 vs n = 66.** On the committed seed the
+  promoted-minus-rejected forward spread is **+3.85pp mean / +3.62pp median**
+  (promoted +4.46%, n = 8; rejected +0.61%, n = 66), across 24 symbols. Small
+  promoted sample, wide dispersion both ways — the gate **rejected the two
+  biggest forward winners** (both MSFT, +26–29%). The number exists to show the
+  instrument works — not to claim the gate selects signal. "Promoted" still means
+  only "passed the gate on its window".
+- **No retirement fires on the committed seed.** The retirement rule requires the
+  winning shadow to have made ≥ 1 realised forward trade ([DECISIONS.md](DECISIONS.md)
+  D45). The one candidate that cleared the return margin — a losing GOOG active
+  vs a rejected GOOG shadow — is blocked because that shadow never traded (it
+  "won" by sitting in cash). We present the rule and the fact that nothing met
+  it: an honest null result, not a curated success story (D10).
 - **Paper trading only.** No live trading path exists in the codebase.
 - **It does not learn.** No training, no weights, no online updates
   ([DECISIONS.md](DECISIONS.md) D9). It revises decisions when forward evidence

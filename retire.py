@@ -21,6 +21,11 @@ The rule, stated so a reviewer can check it against the numbers:
          that would churn active strategies on noise. The claim is that the
          agent revises a decision when evidence *contradicts* it, and a losing
          active strategy that a rejected candidate beat is exactly that.
+      4. S made at least ``min_shadow_forward_trades`` realised trade(s) in the
+         forward window. A shadow that never fired a signal "won" only by
+         sitting in cash — that is a technicality, not a demonstrable
+         replacement. The replacement strategy has to have actually done
+         something forward for the retirement to mean anything (D45).
 
 Shadows are matched to actives by **symbol** — comparing forward returns only
 controls for the instrument when the instrument is the same. A shadow on a
@@ -38,6 +43,7 @@ RETIREMENT_POLICY: dict[str, float] = {
     "min_forward_bars": 40,                 # ~2 trading months of forward evidence
     "min_outperformance_pct": 5.0,          # shadow return − active return, pp
     "active_max_forward_return_pct": 0.0,   # active must also be flat-to-losing forward
+    "min_shadow_forward_trades": 1,         # the shadow must have actually traded forward (D45)
 }
 
 
@@ -61,6 +67,10 @@ class ShadowRecord:
     @property
     def insample_return_pct(self) -> float:
         return float(self.insample_metrics["total_return_pct"])
+
+    @property
+    def forward_trades(self) -> int:
+        return int(self.forward_metrics.get("num_trades", 0) or 0)
 
 
 @dataclass
@@ -115,6 +125,7 @@ def find_retirements(
             r for r in group
             if r.as_of_decision == "rejected"
             and r.forward_bars >= p["min_forward_bars"]
+            and r.forward_trades >= p["min_shadow_forward_trades"]
         ]
         for active in sorted(actives, key=lambda a: a.forward_return_pct):
             if active.forward_return_pct > p["active_max_forward_return_pct"]:
@@ -131,7 +142,8 @@ def find_retirements(
             claimed_winners.add(winner.strategy_id)
             margin = winner.forward_return_pct - active.forward_return_pct
             reason = (
-                f"shadow '{winner.name}' returned {winner.forward_return_pct:+.2f}% vs "
+                f"shadow '{winner.name}' returned {winner.forward_return_pct:+.2f}% "
+                f"({winner.forward_trades} realised forward trade(s)) vs "
                 f"active '{active.name}' {active.forward_return_pct:+.2f}% over "
                 f"{winner.forward_bars} forward bars (margin {margin:.2f}pp > "
                 f"{p['min_outperformance_pct']:.2f}pp), and the active strategy's "
