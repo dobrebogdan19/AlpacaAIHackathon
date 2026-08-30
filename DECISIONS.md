@@ -538,3 +538,52 @@ scrolls rather than crushes on a phone.
 a median/quartile line inside the band (extra dashed line competes with the
 "dashed = retired" signal — the brief asked for one envelope); a JS charting
 lib (constraint).
+
+
+### D44 — Wider candidate batch for a larger selection-bias sample; batch size fixed up front
+
+D38's selection-bias number was computed over only the 19 strategies the four
+seed cycles produced, across 7 symbols — n=4 promoted vs n=15 rejected, too small
+to read into. `scripts/seed.py` now runs one extra step before the regret ledger:
+`_generate_wider_batch` asks the LLM for a **fixed 3 candidates per symbol across
+a fixed 24-symbol set** (72 requested), persisted as ordinary `source='llm'`
+candidates — no cycle, no backtest, no order, because the ledger re-runs the gate
+as-of on every stored strategy anyway (D40), so they are judged on identical
+terms to the cycles' output. The ledger's `as_of` is now **pinned** to
+`2026-06-17` (the date the first principled run used, D35) rather than
+auto-picked, so the wider batch and the originals split on the same date.
+
+Batch size was committed before running and not tuned to an outcome (D35 / D10):
+24 symbols chosen for liquidity + history depth, 3 each, one pass, ledger run
+once, spread reported as-is. The seed was **not** re-run to chase a number.
+
+Outcome on the regenerated seed (as of 2026-06-17, today 2026-08-30):
+* **75 strategies evaluated** (72 requested collapsed to 56 new rows after dedup
+  against the cycles' output + within-batch dups; + the 19 from the cycles − a
+  few skipped for short in-sample history).
+* **Selection-bias spread +4.64pp** — promoted averaged +5.66% forward (n=12),
+  rejected +1.02% (n=63). The gap **did not shrink, zero, or go negative — it
+  widened slightly** from +2.22pp. But: the promoted median is +2.74% vs a
+  rejected median of 0.00% (many rejected candidates never trade forward), so the
+  **median spread is only +2.74pp**; standard deviation is ~8pp on both sides;
+  and the gate **rejected the two largest forward winners** (MSFT Fast EMA Entry
+  +28.82%, MSFT Momentum Breakout +26.63%). The larger n does not turn this into
+  evidence that the gate selects signal — it is still an instrument reading, not
+  a result (D10).
+* **Retirement changed.** Re-seeding regenerates the four cycles' LLM output, so
+  the earlier `AMZN Momentum and ATR → AMZN Volume Surge` case no longer exists.
+  The new run retires **`GOOG Fast Entry`** (as-of promoted on a 114% in-sample
+  return; forward −5.42%, having bought GOOG and held an unexited position down)
+  in favour of the rejected shadow **`GOOG Slow Trend Following`** (+0.00% — it
+  never fired a signal). The rule fires honestly (margin 5.42pp > 5.00pp, active
+  ≤ 0), but this is a **thinner case** than the AMZN one: the winning shadow is
+  inert and both GOOG strategies made 0 realised forward trades. It still
+  illustrates the claim (D9) — a promoted strategy lost money, a rejected
+  alternative did not — but it is a weaker demo centrepiece. Left as-is; the
+  retirement rule was not changed to exclude do-nothing shadows (that is a
+  separate decision if we want it).
+*Rejected:* running the wider candidates through full cycles (would add ~24 runs
+to the decision log for no gain — the ledger re-judges them regardless); leaving
+`as_of` auto-picked (today advancing would drift the date and break comparability
+with the first run); re-seeding until the retirement looked stronger (exactly the
+selection bias this project measures — D35).

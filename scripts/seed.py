@@ -10,6 +10,11 @@ It runs a fixed sequence of cycles against a clean ``seed.db``:
   3. Plain LLM candidates, dry — typically also all-rejected.
   4. LLM candidates + fast seeds again, dry — a second promoting run for variety.
 
+Then a wider candidate batch (24 symbols x 3 LLM candidates each, persisted but
+not cycled) enlarges the pool, and the regret ledger runs once, dry, as of a
+PINNED past date (``REGRET_AS_OF``) so the wider batch is judged on the same
+terms as the four cycles' output — a larger selection-bias sample (D38).
+
 Guarantees at least one run that promoted and one that rejected everything.
 
     python scripts/seed.py             # step 1 live (real paper orders via MCP)
@@ -61,6 +66,48 @@ _SLOW_SEEDS = [_slow_cross("SPY", 50, 150), _slow_cross("QQQ", 60, 180),
                _slow_cross("AAPL", 50, 200)]
 
 
+# --- wider candidate batch, for a larger selection-bias sample ---------------
+#
+# The selection-bias number (D38) was computed over only the 19 strategies the
+# four seed cycles produced, across 7 symbols — too small to read into. This
+# batch enlarges the pool the regret ledger judges. Generating candidates alone
+# does nothing (new strategies have no forward data); they only count once the
+# ledger splits them at the same past as-of date (D35) as everything else.
+#
+# Committed up front, NOT tuned to an outcome (D35 / D10): a fixed 24-symbol set
+# chosen for liquidity + history depth, a fixed 3 candidates requested per
+# symbol (72 total), one pass. Whatever survives validation and dedup is the
+# sample; the ledger runs once and the spread is reported as-is.
+_WIDER_SYMBOLS = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "SPY", "QQQ",
+    "JPM", "BAC", "V", "MA", "WMT", "HD", "PG", "KO", "XOM", "CVX", "JNJ", "DIS",
+    "NFLX", "AMD",
+]
+_WIDER_PER_SYMBOL = 3
+REGRET_AS_OF = "2026-06-17"  # pinned to the date the first principled run used (D35)
+
+
+def _generate_wider_batch(conn) -> int:
+    """Generate ``_WIDER_PER_SYMBOL`` LLM candidates for each ``_WIDER_SYMBOLS``.
+
+    Persisted as ordinary ``source='llm'`` candidates (``generator.generate``
+    with a ``conn`` writes them). No cycle, no backtest, no order — the regret
+    ledger re-runs the gate as-of on every stored strategy anyway, so these are
+    evaluated on identical terms to the four cycles' output. Duplicates collapse
+    against what is already stored (``insert_strategy`` returns the existing id
+    on a dedup-key hit).
+    """
+    before = conn.execute("SELECT COUNT(*) FROM strategies").fetchone()[0]
+    for sym in _WIDER_SYMBOLS:
+        res = _generator.generate(n=_WIDER_PER_SYMBOL, symbols=[sym], conn=conn)
+        log.info("  wider batch %-5s: %d unique candidate(s) (%d dup collapsed)",
+                 sym, len(res.strategy_ids), res.duplicates_collapsed)
+    after = conn.execute("SELECT COUNT(*) FROM strategies").fetchone()[0]
+    log.info("wider batch: %d new strategy row(s) across %d symbols",
+             after - before, len(_WIDER_SYMBOLS))
+    return after - before
+
+
 def _slow_seeds_only(*, n, symbols, conn, run_id):
     strategies, ids = [], []
     for s in _SLOW_SEEDS:
@@ -95,11 +142,18 @@ def main() -> None:
                      res.run_id, res.n_generated, res.n_promoted, res.n_rejected,
                      res.n_orders_submitted)
 
+        # --- wider candidate batch (larger selection-bias sample, D38) --------
+        log.info("=== seeding step: wider candidate batch (%d symbols x %d) ===",
+                 len(_WIDER_SYMBOLS), _WIDER_PER_SYMBOL)
+        _generate_wider_batch(conn)
+
         # --- Phase 4: the regret ledger, as-of a principled past date (D35) ---
         # Always dry: this is a historical simulation replayed over stored bars,
         # not a path that should place or close live orders during seeding.
+        # as_of is PINNED (not auto-picked) so this run is comparable to the
+        # first principled run — same terms for the wider batch and the originals.
         log.info("=== seeding step: regret ledger (as-of forward tracking) ===")
-        rr = _regret.run_regret_ledger(conn=conn, dry_run=True)
+        rr = _regret.run_regret_ledger(conn=conn, dry_run=True, as_of=REGRET_AS_OF)
         log.info("  -> regret run %d, as of %s: %d evaluated, %d retirement(s)",
                  rr.run_id, rr.as_of, len(rr.records), len(rr.retirements))
         if rr.selection_bias:
