@@ -1003,3 +1003,106 @@ not the constraint being wrong here); raising the caps far enough to never bind
 (the point is a visible book with a real ceiling, not unlimited exposure);
 increasing the tick frequency instead of the universe (no new information on
 daily bars — D49).
+
+
+### D54 � Dashboard reads the live paper account: `GET /api/account`, cached, last-known-on-failure
+
+The hackathon's first judging criterion is realised paper-account P&L, judged by
+inspecting the Alpaca account directly. Our own dashboard showed nothing about
+account state � a real gap. `account.py` fills it: portfolio value, cash, total
+P&L against the fixed `STARTING_BALANCE = 100_000.0`, and every open option
+position with its unrealised P&L.
+
+It is the **one** dashboard GET that touches the network. Every other read
+renders from stored rows only (D6); this one cannot � the number has to be live
+to match what a judge sees. It goes through the **MCP path** (`mcp_client.check_connection`
++ `list_positions`), not a direct SDK client, same as the order path.
+
+To keep page loads and the uptime pinger off the MCP subprocess, the computed
+snapshot is cached in the existing `system_state` kv table for
+`ACCOUNT_CACHE_TTL_S` (default 45s), with a process lock so concurrent requests
+collapse to one fetch. A failed live read serves the last cached snapshot with
+`stale: true` and its timestamp; with no cache at all, `{"available": false}`.
+The panel always shows a number or an honest "unavailable", never a 500.
+
+*Rejected:* a direct `alpaca-py` client (D7 � the MCP path is the sponsor
+integration and must be the one that moves money-adjacent data); a new SQLite
+table for the cache (the `system_state` kv table already exists for exactly this
+kind of small transient value); no cache (every dashboard load and every pinger
+hit would spawn the MCP subprocess); computing P&L from stored order rows
+instead of the live account (it would drift from the account a judge inspects �
+the whole point).
+
+
+### D55 � Plain-language activity summary: LLM over a facts dict of stored rows, cached hourly
+
+The dashboard reads like an engineer's output � decision tables, metric strings,
+order rows. `summary.py` adds a 3-5 sentence plain-English note near the top:
+how many cycles ran, what was opened and the stated reason, what was closed and
+why, what is held now.
+
+Same discipline as the post-mortem writer (D37): the LLM is handed **only** a
+facts dict built from real stored numbers (`build_facts` � runs, scheduler tick
+counts, order rows joined to their strategy's rationale, retirements) and the
+system prompt forbids inventing tickers, prices, dates, or performance claims
+not in the data. `_fallback_text` renders the same facts plainly when the call
+fails or no key is set, so the panel is never empty-because-of-an-error.
+
+Provider is OpenAI `gpt-4o-mini`, one constant, as in `generator` / `postmortem`.
+Generation costs a call (~10s observed) and the content barely moves between
+loads, so the result is cached in `system_state` and regenerated only when the
+cache is missing or older than `SUMMARY_MAX_AGE_S` (3600). The frontend fetches
+it asynchronously alongside every other panel, so the slow first generation
+never blocks the rest of the page.
+
+*Rejected:* generating on every page load (wasteful and slow � the brief says
+at most hourly); free-text narrative not tied to stored numbers (D25/D37 � the
+one thing this project must not do is let the model narrate beyond the
+evidence); a background regeneration thread (another moving part; a lazy
+hourly refresh on read is enough).
+
+
+### D56 � Empty as-of panels say the analysis ran on `seed.db`, not "no data yet"
+
+The live competition instance starts from an empty database (`SKIP_SEED_BOOTSTRAP`,
+D49). The regret-ledger study � selection-bias spread, shadow curves, the gate
+calibration proposal, the one retirement it produced � lives in `seed.db` and
+was run on a separate development dataset. On the live instance those four
+panels have no data and never will: that account has days of history, not the
+months the as-of split needs.
+
+Showing "no data yet" would imply it is coming. Instead each empty panel now
+states plainly that this is the live instance, that the as-of analysis was run
+on `seed.db` in the repo, and that it is not reproduced here because it is not
+this instance's data. One shared `devDataNote()` helper, per-panel wording.
+
+This also removed the old `loadHero` fallback that drew plain backtest curves in
+the forward-tracking section when no as-of run existed � on the live instance
+that would have mislabelled ordinary in-sample curves as forward tracking.
+
+*Rejected:* seeding the live instance with `seed.db` so the panels populate (D49
+� the competition account trades clean, and the as-of analysis is a different
+account's history); hiding the panels entirely (the analysis is real work and
+part of the story � the honest move is to point at where it lives, not to erase
+it); a generic "no data" string (reads as a bug or a pending state, not a
+deliberate separation of datasets).
+
+
+### D57 � Dashboard lede and top hierarchy: shorter copy, smaller title
+
+The header lede had grown to a five-sentence paragraph that read like generated
+marketing copy � rhetorical build-up before any concrete claim. Cut to three
+plain sentences plus the "paper trading only" tag: what the agent does, why the
+rejections matter, when it retires a strategy.
+
+Proportion, not redesign � palette and typography unchanged. The `h1` clamp was
+oversized against everything below it (max 1.95rem vs 0.875rem section headings);
+brought to a 1.3�1.55rem clamp. Section `h2` nudged 0.875�0.9rem with tighter
+tracking for a little more presence. Top rhythm tightened: header padding
+26/22 � 22/20, `main` padding-top 34 � 24. `.acct-value` clamp lowered
+(1.65 � 1.45rem max) so the incoming account panel sits below the title in the
+hierarchy rather than rivalling it.
+
+*Rejected:* recolouring or reweighting headings for presence (character change,
+not proportion � out of scope); touching the `.bias-num` instrument readout
+(a data figure deep in the page, not a heading).

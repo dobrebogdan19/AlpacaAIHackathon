@@ -25,25 +25,24 @@
 
   /* ---- header ------------------------------------------------------------ */
   header { background:var(--card); border-top:3px solid var(--accent);
-           border-bottom:1px solid var(--line); padding:34px 24px 26px; }
+           border-bottom:1px solid var(--line); padding:22px 24px 20px; }
   .header-inner { max-width:var(--maxw); margin:0 auto; }
-  h1 { margin:0 0 14px; font-weight:700; letter-spacing:-.022em; line-height:1.12;
-       font-size:clamp(1.75rem, 1.25rem + 2.3vw, 2.5rem); }
-  .lede { max-width:64ch; margin:0; color:var(--fg-2); font-size:var(--s-0); line-height:1.6; }
-  .lede p { margin:0 0 10px; }
-  .lede p:last-child { margin:0; }
-  #healthLine { margin-top:20px; font-family:var(--mono); font-size:.72rem;
+  h1 { margin:0 0 10px; font-weight:700; letter-spacing:-.02em; line-height:1.2;
+       font-size:clamp(1.3rem, 1.12rem + .9vw, 1.55rem); }
+  .lede { max-width:58ch; margin:0; color:var(--fg-2); font-size:var(--s-0); line-height:1.58; }
+  .lede p { margin:0; }
+  #healthLine { margin-top:12px; font-family:var(--mono); font-size:.72rem;
                 letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
   #healthLine::before { content:"● "; color:var(--accent); }
 
   /* ---- layout & section rhythm ----------------------------------------- */
-  main { max-width:var(--maxw); margin:0 auto; padding:48px 24px 76px; }
-  section { margin:0 0 60px; }
+  main { max-width:var(--maxw); margin:0 auto; padding:24px 24px 76px; }
+  section { margin:0 0 52px; }
   section:last-child { margin:0; }
 
-  h2 { margin:0 0 18px; padding-bottom:8px; border-bottom:1px solid var(--line-2);
-       font-size:var(--s--1); font-weight:700; text-transform:uppercase;
-       letter-spacing:.09em; color:var(--accent); }
+  h2 { margin:0 0 15px; padding-bottom:8px; border-bottom:1.5px solid var(--line-2);
+       font-size:.9rem; font-weight:700; text-transform:uppercase;
+       letter-spacing:.05em; color:var(--accent); }
 
   .sub { color:var(--muted); font-size:var(--s--1); line-height:1.55; }
   .sub strong { color:var(--fg); font-weight:600; }
@@ -64,6 +63,45 @@
   .pm { white-space:pre-wrap; font-family:var(--mono); font-size:.8125rem; line-height:1.62;
         color:var(--fg-2); background:var(--paper-2); border-left:2px solid var(--line-2);
         border-radius:0 6px 6px 0; padding:14px 16px; margin-top:12px; overflow-x:auto; }
+
+  /* ---- account panel: live P&L, sits under the title without competing - */
+  #accountSection { margin-bottom:22px; }
+  #accountPanel { background:var(--card); border:1px solid var(--line-2); border-radius:8px;
+                  padding:20px 24px 22px;
+                  box-shadow:0 1px 2px rgba(20,25,35,.04), 0 10px 26px -20px rgba(20,25,35,.18); }
+  .acct-top { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 26px; }
+  .acct-label { width:100%; font-family:var(--mono); font-size:.68rem; text-transform:uppercase;
+                letter-spacing:.07em; color:var(--muted); margin-bottom:3px; }
+  .acct-value { font-family:var(--mono); font-weight:600; font-variant-numeric:tabular-nums;
+                letter-spacing:-.02em; color:var(--fg);
+                font-size:clamp(1.25rem, 1.05rem + .85vw, 1.45rem); }
+  .acct-delta { font-family:var(--mono); font-variant-numeric:tabular-nums; font-weight:600;
+                font-size:.95rem; color:var(--fg-2); }
+  .acct-delta.pos { color:var(--promoted); }
+  .acct-delta.neg { color:var(--rejected); }
+  .acct-meta { margin-left:auto; align-self:center; text-align:right; font-family:var(--mono);
+               font-size:.68rem; line-height:1.5; letter-spacing:.02em; color:var(--muted); }
+  .acct-meta .stale { color:var(--retired); }
+  #acctPositions { margin-top:16px; }
+  #acctPositions table { font-variant-numeric:tabular-nums; }
+  #acctPositions th:not(:first-child), #acctPositions td:not(:first-child) { text-align:right; }
+  #acctPositions td:first-child { font-family:var(--mono); font-size:.72rem; }
+  .pnl-pos { color:var(--promoted); }
+  .pnl-neg { color:var(--rejected); }
+
+  /* ---- plain-language summary — narrative, not a headline ------------- */
+  #summarySection { margin-bottom:52px; }
+  #summaryPanel { background:var(--paper-2); border:1px solid var(--line);
+                  border-left:3px solid var(--accent); border-radius:0 7px 7px 0;
+                  padding:15px 18px; }
+  #summaryPanel p { margin:0; color:var(--fg-2); font-size:var(--s-0); line-height:1.6; }
+  #summaryText.loading { color:var(--muted); font-style:italic; }
+  .summary-stamp { margin-top:8px; font-family:var(--mono); font-size:.66rem;
+                   text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .summary-stamp:empty { display:none; }
+
+  code { font-family:var(--mono); font-size:.85em; background:var(--paper-2);
+         border:1px solid var(--line); border-radius:4px; padding:.5px 4px; }
 
   /* ---- selection-bias instrument panel -------------------------------- */
   #biasSection { background:var(--card); border:1px solid var(--line-2);
@@ -154,11 +192,13 @@
 
   @media (max-width:640px) {
     body { font-size:14px; }
-    header { padding:24px 18px 20px; }
-    main { padding:34px 18px 56px; }
+    header { padding:20px 18px 18px; }
+    main { padding:22px 18px 56px; }
     section { margin-bottom:44px; }
     #retireSection { padding:20px 18px; }
     #biasSection { padding:18px 16px; }
+    #accountPanel { padding:16px 16px 18px; }
+    .acct-meta { margin-left:0; text-align:left; }
     .bias-row { gap:22px; }
     th,td { padding:9px 11px; }
   }
@@ -169,20 +209,28 @@
   <div class="header-inner">
   <h1>Self-auditing trading agent</h1>
   <div class="lede">
-    <p>This agent writes candidate trading strategies, backtests each one on historical
-      daily bars, and promotes only those that clear a fixed gate — total return, max
-      drawdown, trade count. Everything it rejects keeps running as a shadow portfolio,
-      tracked forward on data the gate never saw.</p>
-    <p>When a rejected shadow consistently beats a strategy the gate promoted, the agent
-      retires the promoted one and writes a post-mortem. The rejections matter as much as
-      the promotions: they are the control group. Without tracking what it turned down,
-      the agent has no way to tell whether its gate is doing anything at all. Paper
-      trading only.</p>
+    <p>The agent writes trading strategies, backtests them on daily bars, and runs only the
+      ones that clear a fixed gate. Everything it rejects keeps trading as a shadow portfolio,
+      so there is a control group to judge the gate against. When a shadow beats a live
+      strategy, the agent retires the live one. Paper trading only.</p>
   </div>
   <div class="sub" id="healthLine">loading…</div>
   </div>
 </header>
 <main>
+
+  <section id="accountSection">
+    <h2>Paper account — live P&amp;L</h2>
+    <div id="accountPanel"><span class="empty">loading…</span></div>
+  </section>
+
+  <section id="summarySection">
+    <h2>What the agent has done recently</h2>
+    <div id="summaryPanel">
+      <p id="summaryText" class="loading">Summarising recent activity…</p>
+      <div class="summary-stamp" id="summaryStamp"></div>
+    </div>
+  </section>
 
   <section id="retireSection" hidden>
     <h2>Retirement case study &amp; post-mortem</h2>
@@ -197,6 +245,11 @@
   <section id="biasSection">
     <h2>Selection-bias check — an instrument, not a verdict</h2>
     <div id="bias"><span class="empty">loading…</span></div>
+  </section>
+
+  <section id="calibrationSection">
+    <h2>Gate calibration — proposed from forward evidence, not applied</h2>
+    <div id="calibration"><span class="empty">loading…</span></div>
   </section>
 
   <section>
@@ -237,6 +290,40 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const COLORS = ["#1a4f8a","#0a7c3a","#a23b2c","#8a6d1a","#5b3a8a","#1a7f8a","#8a1a6d"];
 const fmtPct = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%");
+const fmtPP = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "pp");
+const cap = (s) => String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
+const money = (v, signed) => {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  const n = Number(v);
+  const body = "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (n < 0 ? "−" : (signed ? "+" : "")) + body;
+};
+const fmtNum = (v) => (v == null ? "—" : Number(v).toLocaleString("en-US"));
+const fmtStamp = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? esc(String(iso))
+    : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+
+// This is the live competition instance. The as-of forward-tracking study — the
+// selection-bias spread, shadow curves, the calibration proposal and the one
+// retirement it produced — was run on a separate development dataset (seed.db in
+// the repo), not on this account's short live history. Say so plainly rather than
+// showing "no data yet" as if it were still coming.
+function devDataNote(kind) {
+  const what = {
+    retirement: "The retirement case study and its post-mortem come",
+    bias: "The selection-bias spread comes",
+    calibration: "The gate-calibration proposal comes",
+    forward: "The forward-tracking curves come",
+  }[kind] || "This analysis comes";
+  return `<p class="empty">This is the live competition instance. ${what} from the
+    as-of study, which was run on a separate development dataset (<code>seed.db</code>
+    in the repo) — not on this account's short live history. It is not reproduced
+    here because it is not this instance's data.</p>`;
+}
 
 // Presentation-only transform. gate.py still stores the precise machine reason and
 // the API still returns it verbatim — this only rewrites it for display: keep every
@@ -281,13 +368,99 @@ async function loadHealth() {
   } catch (e) { $("healthLine").textContent = "health check failed: " + e.message; }
 }
 
+async function loadAccount() {
+  try {
+    const a = await j("/api/account");
+    if (a.available === false) {
+      $("accountPanel").innerHTML = `<p class="empty">Account state is unavailable — the live
+        read through the Alpaca MCP server failed and no cached value has been stored yet.
+        It will appear once a read succeeds${a.error ? ` (${esc(a.error)})` : ""}.</p>`;
+      return;
+    }
+    const gain = (a.total_pnl_abs ?? 0) >= 0;
+    const meta = a.stale
+      ? `<span class="stale">last known — live read failed</span><br>as of ${fmtStamp(a.as_of)}`
+      : `as of ${fmtStamp(a.as_of)} · via Alpaca MCP`;
+    const posRows = (a.positions || []).map(p => {
+      const up = (p.unrealized_pl ?? 0) >= 0;
+      const ac = p.asset_class && !/equity/.test(p.asset_class)
+        ? ` <span class="sub">${esc(p.asset_class)}</span>` : "";
+      return `<tr>
+        <td>${esc(p.symbol)}${ac}</td>
+        <td>${fmtNum(p.qty)}</td>
+        <td>${money(p.avg_entry_price)}</td>
+        <td>${money(p.current_price)}</td>
+        <td>${money(p.market_value)}</td>
+        <td class="${up ? "pnl-pos" : "pnl-neg"}">${money(p.unrealized_pl, true)}
+          <span class="sub">${fmtPct(p.unrealized_plpc)}</span></td>
+      </tr>`;
+    }).join("");
+    $("accountPanel").innerHTML = `
+      <div class="acct-top">
+        <span class="acct-label">Portfolio value</span>
+        <span class="acct-value">${money(a.portfolio_value)}</span>
+        <span class="acct-delta ${gain ? "pos" : "neg"}">${money(a.total_pnl_abs, true)} · ${fmtPct(a.total_pnl_pct)}</span>
+        <span class="acct-meta">${meta}<br>cash ${money(a.cash)} · from ${money(a.starting_balance)} start</span>
+      </div>
+      ${posRows
+        ? `<div class="overflow" id="acctPositions"><table>
+             <tr><th>Position</th><th>Qty</th><th>Avg entry</th><th>Last</th><th>Mkt value</th><th>Unrealised P&amp;L</th></tr>
+             ${posRows}
+           </table></div>`
+        : `<p class="empty" style="margin-top:12px">No open positions right now.</p>`}`;
+  } catch (e) { $("accountPanel").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
+async function loadSummary() {
+  try {
+    const s = await j("/api/summary");
+    $("summaryText").classList.remove("loading");
+    $("summaryText").textContent = s.text || "No activity to summarise yet.";
+    $("summaryStamp").textContent = s.generated_at
+      ? `Generated ${fmtStamp(s.generated_at)} from stored records${s.stale ? " (stale)" : ""} · refreshed at most hourly`
+      : "";
+  } catch (e) {
+    $("summaryText").classList.remove("loading");
+    $("summaryText").innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+
+async function loadCalibration() {
+  try {
+    const c = await j("/api/calibration");
+    if (!c.available) { $("calibration").innerHTML = devDataNote("calibration"); return; }
+    const r = c.record || {};
+    const mv = r.threshold_moves || {};
+    const moved = Object.entries(mv)
+      .filter(([, m]) => Number(m.delta) !== 0)
+      .map(([k, m]) => `${esc(k.replace(/_/g, " "))} ${esc(m.from)} → ${esc(m.to)}`);
+    const hIn = (r.proposed || {}).delta_vs_current_pp;
+    const hOut = ((r.holdout || {}).holdout || {}).improvement_pp;
+    $("calibration").innerHTML = `
+      <div class="sub" style="margin-bottom:10px">
+        Objective: ${esc(r.objective || "maximise mean forward return of the promoted set")}.
+        As of <strong>${esc(r.as_of)}</strong>, ${esc(r.n_candidates)} candidates.
+      </div>
+      <div class="bias-row">
+        <div>
+          <div class="bias-num">${esc(cap((r.verdict || "").replace(/-/g, " ")))}</div>
+          <div class="bias-side" style="max-width:52ch">${esc(r.recommendation || "")}</div>
+        </div>
+      </div>
+      <div class="note">
+        The search's best thresholds (${moved.length ? moved.join(", ") : "no change"}) raise mean
+        forward return by <b>${fmtPP(hIn)}</b> in-sample. On the held-out candidates the search never
+        fitted, that gain is <b>${fmtPP(hOut)}</b> — ${hOut != null && hOut > 0 ? "it partly survives" : "it reverses"}.
+        The proposal is stored and surfaced only; <code>gate.py</code> is unchanged. Applying it stays a
+        deliberate human edit.
+      </div>`;
+  } catch (e) { $("calibration").innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
+
 async function loadBias() {
   try {
     const b = await j("/api/selection-bias");
-    if (!b.available) {
-      $("bias").innerHTML = `<span class="empty">${esc(b.note || "no as-of evaluation yet")}</span>`;
-      return;
-    }
+    if (!b.available) { $("bias").innerHTML = devDataNote("bias"); return; }
     const cls = b.spread_pp >= 0 ? "bias-pos" : "bias-neg";
     $("bias").innerHTML = `
       <div class="bias-row">
@@ -463,19 +636,18 @@ function heroSVG(series, asOf) {
 
 async function loadHero() {
   try {
-    let { series, as_of } = await j("/api/shadow-curves");
-    let note = "";
+    const { series, as_of } = await j("/api/shadow-curves");
     if (!series || !series.length) {
-      const eq = await j("/api/equity-curves");
-      series = (eq.series || []).map(s => ({ ...s, as_of_decision: "promoted" }));
-      note = "Showing plain backtest curves — no as-of forward-tracking run has been recorded yet.";
-    } else {
-      note = `Historical simulation of forward tracking. Every strategy is replayed on the `
-           + `bars AFTER ${esc(as_of)} — data it did not see when the gate judged it. `
-           + `Coloured lines are the strategies the gate promoted at that date; the grey band `
-           + `spans the min–max range of the ones it rejected. Percent return from the decision point. `
-           + `This is not weeks of live trading.`;
+      $("hero").innerHTML = devDataNote("forward");
+      $("heroLegend").innerHTML = "";
+      $("heroNote").innerHTML = "";
+      return;
     }
+    const note = `Historical simulation of forward tracking. Every strategy is replayed on the `
+      + `bars AFTER ${esc(as_of)} — data it did not see when the gate judged it. `
+      + `Coloured lines are the strategies the gate promoted at that date; the grey band `
+      + `spans the min–max range of the ones it rejected. Percent return from the decision point. `
+      + `This is not weeks of live trading.`;
     const { svg, legend } = heroSVG(series, as_of);
     $("hero").innerHTML = svg;
     $("heroLegend").innerHTML = legend;
@@ -488,11 +660,7 @@ async function loadRetirements() {
     const { retirements } = await j("/api/retirements");
     if (!retirements.length) {
       $("retireSection").hidden = false;
-      $("retirements").innerHTML = '<span class="empty">No retirements at the evaluated '
-        + 'as-of date. The rule needs a rejected shadow that (1) beat a losing active by the '
-        + 'policy margin forward and (2) actually traded forward — a shadow that "won" only by '
-        + 'sitting in cash does not count. One case cleared (1) but not (2), so nothing was '
-        + 'churned. The rule and its outcome are both reported as-is.</span>';
+      $("retirements").innerHTML = devDataNote("retirement");
       return;
     }
     $("retireSection").hidden = false;
@@ -573,7 +741,8 @@ async function loadOrders() {
 }
 
 function refreshAll() {
-  loadHealth(); loadBias(); loadHero(); loadRetirements(); loadDecisionLog(); loadOrders();
+  loadHealth(); loadAccount(); loadSummary(); loadBias(); loadCalibration();
+  loadHero(); loadRetirements(); loadDecisionLog(); loadOrders();
 }
 
 let polling = null;

@@ -493,6 +493,39 @@ def calibration():
         conn.close()
 
 
+@app.get("/api/account")
+def account_state():
+    """Live paper-account P&L for the dashboard header (account.py).
+
+    The one GET that reaches the network — a cached (30-60s) read of the Alpaca
+    account through the MCP path (D54). A failed read returns the last known
+    snapshot with ``stale: true``, never an error.
+    """
+    import account
+
+    conn = _conn()
+    try:
+        return account.snapshot(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/summary")
+def plain_language_summary():
+    """A few plain sentences on what the agent has done recently (summary.py).
+
+    Written by the LLM from a facts dict of stored numbers only, cached and
+    regenerated at most once an hour — a page load does not trigger a call.
+    """
+    import summary
+
+    conn = _conn()
+    try:
+        return summary.get_or_generate(conn)
+    finally:
+        conn.close()
+
+
 @app.get("/api/retirements")
 def retirements():
     """Every retirement the regret ledger triggered, with its post-mortem."""

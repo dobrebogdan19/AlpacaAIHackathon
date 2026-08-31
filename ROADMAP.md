@@ -255,6 +255,19 @@ SVG (D29). Served at `/` by `api.py`.
       *Accept:* a visitor can trigger a live cycle and watch it complete.
       Button → 202, polls `GET /api/runs/{id}` every 2s, refreshes all panels
       when `finished_at` is set.
+- [x] **T6.4** Paper-account P&L panel at the top: `GET /api/account` (D54) —
+      portfolio value, absolute + % P&L vs the $100k start, open option
+      positions with unrealised P&L. Live read through the MCP path, cached
+      45s, last-known-on-failure.
+      *Accept:* the number matches the Alpaca account a judge inspects.
+- [x] **T6.5** Plain-language activity summary near the top: `GET /api/summary`
+      (D55) — the LLM writes 3-5 sentences from a facts dict of stored rows
+      only, cached and regenerated at most hourly. Fallback plain rendering
+      when the call fails.
+- [x] **T6.6** Surface the `GET /api/calibration` holdout-reversal finding, and
+      state plainly in the retirement / selection-bias / forward-tracking /
+      calibration panels that the as-of study ran on `seed.db`, not this live
+      instance, when they have no data.
 
 ---
 

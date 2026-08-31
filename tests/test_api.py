@@ -200,6 +200,45 @@ def test_calibration_endpoint_returns_latest_record(client):
     assert body["record"]["verdict"] == "does-not-survive-holdout"
 
 
+def test_account_endpoint_serves_computed_pnl(client, monkeypatch):
+    import account
+    monkeypatch.setattr(account, "_fetch_live", lambda: {
+        "account": {"portfolio_value": "101000.00", "cash": "50000.00"},
+        "positions": [],
+    })
+    a = client.get("/api/account").json()
+    assert a["available"] is True
+    assert a["total_pnl_abs"] == 1000.0
+    assert a["portfolio_value"] == 101000.0
+
+
+def test_account_endpoint_falls_back_to_stale_on_failure(client, monkeypatch):
+    import account
+    monkeypatch.setattr(account, "_fetch_live", lambda: {
+        "account": {"portfolio_value": "99000.00", "cash": "1.00"}, "positions": [],
+    })
+    client.get("/api/account")  # warm the cache
+
+    def boom():
+        raise RuntimeError("mcp down")
+    monkeypatch.setattr(account, "_fetch_live", boom)
+    monkeypatch.setattr(account, "_fresh", lambda _at: False)
+    a = client.get("/api/account").json()
+    assert a["stale"] is True and a["portfolio_value"] == 99000.0
+
+
+def test_summary_endpoint_uses_llm_stub_and_caches(client, monkeypatch):
+    import summary
+    calls = []
+    monkeypatch.setattr(summary, "_call_llm",
+                        lambda facts: calls.append(1) or "Ran two cycles, holding nothing.")
+    first = client.get("/api/summary").json()
+    second = client.get("/api/summary").json()
+    assert first["text"] == "Ran two cycles, holding nothing."
+    assert second["text"] == first["text"]
+    assert len(calls) == 1
+
+
 def test_dashboard_served(client):
     r = client.get("/")
     assert r.status_code == 200 and "Decision log" in r.text
