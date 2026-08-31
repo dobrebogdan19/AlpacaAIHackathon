@@ -43,8 +43,14 @@ services:
       # --- T5.3: autonomous operation for the hackathon window ----------------
       # The scheduler runs generate->gate->execute a couple of times per trading
       # day and an option-position exit sweep every tick. See scheduler.py.
+      #
+      # HALTED 2026-08-31 after the D58 incident: a /tmp DB wipe on redeploy made
+      # risk.py blind to open positions (it trusted local order rows) and made
+      # the scheduler re-run a full entry cycle it had already done. Do NOT set
+      # this back to "1" until a full restart of the deployed instance has been
+      # tested and risk.py is confirmed to see the broker's positions (D58).
       - key: SCHEDULER_ENABLED
-        value: "1"
+        value: "0"
       # Fresh dedicated hackathon paper account: no seed history, reconcile
       # order/position state from the account on startup (reconcile.py).
       - key: SKIP_SEED_BOOTSTRAP
