@@ -126,3 +126,16 @@ def test_bad_enum_values_are_rejected(conn):
     with pytest.raises(sqlite3.IntegrityError):
         db.insert_strategy(conn, name="s", symbol="AAPL", schema_json="{}",
                            rationale=None, source="not-a-source")
+
+
+def test_order_reconstructed_flag_round_trips(conn):
+    """D58: the reconstructed marker on an order row defaults 0 and stores 1."""
+    sid = db.insert_strategy(conn, name="s", symbol="AAPL", schema_json="{}",
+                             rationale=None, source="manual", dedup_key="k")
+    plain = db.insert_order(conn, strategy_id=sid, run_id=None, symbol="AAPL",
+                            qty=1.0, side="buy", status="filled")
+    recon = db.insert_order(conn, strategy_id=sid, run_id=None, symbol="AAPL",
+                            qty=1.0, side="buy", status="broker-reconstructed",
+                            reconstructed=True)
+    rows = {o["id"]: o["reconstructed"] for o in db.list_orders(conn)}
+    assert rows[plain] == 0 and rows[recon] == 1

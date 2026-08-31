@@ -81,6 +81,23 @@ async def _lifespan(_app):
     """
     import scheduler
 
+    # D58: on a real deploy (DB_PATH set), reconcile the DB against the broker at
+    # boot — reconstruct any positions a wipe lost so risk.py is not blind. The
+    # scheduler does this itself when it runs; do it here when it does not, so the
+    # manual POST /api/cycle path is safe too. Exactly one sync per boot.
+    if os.getenv("DB_PATH") and not scheduler.enabled():
+        try:
+            import reconcile
+            conn = db.connect()
+            try:
+                summary = reconcile.sync_with_broker(conn)
+                log.info("startup broker sync: %s position(s) reconstructed, %s stale closed",
+                         summary["backfill"]["reconstructed"], summary["reconcile"]["closed"])
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — never block startup on the MCP path
+            log.exception("startup broker sync failed — API still serving")
+
     try:
         scheduler.start()
     except Exception:  # noqa: BLE001 — a scheduler failure must not stop the API

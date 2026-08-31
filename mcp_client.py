@@ -209,6 +209,21 @@ def list_open_orders() -> list[dict]:
     return _as_list(data)
 
 
+def list_recent_orders(limit: int = 100) -> list[dict]:
+    """Recent orders in any state (``get_orders`` status=all), newest first.
+
+    Used by the scheduler to recover "when did we last trade?" from the broker
+    after a DB wipe, so it does not re-run an entry cycle it has already done (D58).
+    """
+    payload, _raw, _tools = _call(
+        ORDERS_TOOL, {"status": "all", "limit": str(limit), "direction": "desc"}
+    )
+    data, err = _unwrap(payload)
+    if err:
+        raise RuntimeError(f"{ORDERS_TOOL} failed: {err}")
+    return _as_list(data)
+
+
 def close_position(symbol: str, *, dry_run: bool | None = None) -> OrderResult:
     """Close the whole paper position in ``symbol`` via the MCP server (T4.3).
 

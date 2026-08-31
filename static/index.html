@@ -262,14 +262,27 @@
   <section>
     <h2>Decision log</h2>
     <div class="sub" style="margin-bottom:12px">
-      Every candidate, with the gate's verdict and its reason. This is the record the
-      agent judges itself on — the full history stays here, most recent run first.
+      Every candidate, with the gate's verdict and its reason — the record the
+      agent judges itself on, most recent run first.
+    </div>
+    <div class="note" style="margin-bottom:12px">
+      This instance runs on Render's free tier, which has no persistent disk: the
+      database lives in <code>/tmp</code> and is wiped on every restart. <b>Run and
+      decision history therefore resets on restart</b> and only covers the time since
+      the instance last started. Positions and orders do <b>not</b> reset — on
+      startup they are read back from the Alpaca account itself and any position
+      whose originating run was lost is shown as <b>reconstructed</b> (D58).
     </div>
     <div id="decisionLog"><span class="empty">loading…</span></div>
   </section>
 
   <section>
     <h2>Orders</h2>
+    <div class="sub" style="margin-bottom:12px">
+      Reconciled against the broker on every startup. Rows marked
+      <b>reconstructed</b> are real positions whose originating run was lost to a
+      free-tier restart — the holding is genuine, the strategy and gate reason are not.
+    </div>
     <div class="overflow"><div id="ordersTable"><span class="empty">loading…</span></div></div>
   </section>
 
@@ -731,7 +744,7 @@ async function loadOrders() {
         <td>${esc(o.strategy_name)}</td>
         <td>${esc(o.symbol)}</td>
         <td>${esc(o.side)}</td>
-        <td>${esc(o.status)}${o.dry_run ? " <span class='sub'>(dry)</span>" : ""}</td>
+        <td>${esc(o.status)}${o.dry_run ? " <span class='sub'>(dry)</span>" : ""}${o.reconstructed ? ' <span class="pill">reconstructed</span>' : ""}</td>
         <td><span class="pill ${o.submitted_via === 'mcp' ? 'promoted' : ''}">${esc(o.submitted_via)}</span></td>
         <td class="mono">${esc(o.broker_order_id || "—")}</td>
         <td class="sub">${esc((o.created_at || "").replace("T", " ").slice(0, 16))}</td>

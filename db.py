@@ -187,6 +187,11 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("orders", "expiry", "ALTER TABLE orders ADD COLUMN expiry TEXT"),
     ("orders", "premium", "ALTER TABLE orders ADD COLUMN premium REAL"),
     ("orders", "selection_reason", "ALTER TABLE orders ADD COLUMN selection_reason TEXT"),
+    # D58: a row rebuilt from a broker position after a restart wiped the DB. The
+    # position is real; the strategy and gate reason that opened it are gone and
+    # are NOT invented. The flag lets the dashboard label the row honestly and
+    # lets risk.py tell reconstructed exposure from freshly-decided exposure.
+    ("orders", "reconstructed", "ALTER TABLE orders ADD COLUMN reconstructed INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -505,6 +510,7 @@ def insert_order(
     expiry: str | None = None,
     premium: float | None = None,
     selection_reason: str | None = None,
+    reconstructed: bool = False,
 ) -> int:
     """Insert one order row.
 
@@ -513,16 +519,22 @@ def insert_order(
     ``expiry``, ``premium`` (cash to open one contract), and ``selection_reason``
     (why ``options.select_contract`` picked it — or why none was chosen, for a
     ``status='skipped'`` row).
+
+    ``reconstructed=True`` marks a row rebuilt from a broker position after a
+    restart (reconcile.backfill_positions, D58) — a real holding whose originating
+    decision was lost, never fabricated.
     """
     cur = conn.execute(
         """INSERT INTO orders
                (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
                 submitted_via, dry_run, raw_response, asset_class, contract_symbol,
-                underlying, strike, expiry, premium, selection_reason, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                underlying, strike, expiry, premium, selection_reason, reconstructed,
+                created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
          submitted_via, 1 if dry_run else 0, raw_response, asset_class, contract_symbol,
-         underlying, strike, expiry, premium, selection_reason, _now()),
+         underlying, strike, expiry, premium, selection_reason, 1 if reconstructed else 0,
+         _now()),
     )
     conn.commit()
     return int(cur.lastrowid)

@@ -220,3 +220,88 @@ def test_risk_env_var_widens_the_option_premium_cap(conn, monkeypatch):
 def test_non_numeric_risk_env_var_keeps_the_strict_default(conn, monkeypatch):
     monkeypatch.setenv("RISK_MAX_CONCURRENT_POSITIONS", "lots")
     assert risk.limit("MAX_CONCURRENT_POSITIONS") == risk.MAX_CONCURRENT_POSITIONS
+
+
+# --- broker as source of truth (D58) --------------------------------------
+
+_OCC = "AAPL261009C00330000"
+
+
+@pytest.fixture
+def _broker_truth(monkeypatch):
+    """Turn on BROKER_TRUTH and give a clean broker cache + stubbed MCP seams."""
+    monkeypatch.setenv("BROKER_TRUTH", "1")
+    monkeypatch.setattr(risk, "_broker_cache", {"at": 0.0, "view": None})
+    import mcp_client
+    monkeypatch.setattr(mcp_client, "list_positions", lambda: [])
+    monkeypatch.setattr(mcp_client, "list_open_orders", lambda: [])
+    return monkeypatch
+
+
+def _occ(n):
+    return f"AAPL2610{n:02d}C00330000"
+
+
+def _broker_positions(monkeypatch, occs, cost_basis=680.0):
+    import mcp_client
+    monkeypatch.setattr(mcp_client, "list_positions",
+                        lambda: [{"symbol": s, "asset_class": "us_option",
+                                  "qty": "1", "cost_basis": str(cost_basis)} for s in occs])
+
+
+def test_broker_truth_counts_positions_from_the_broker(conn, _broker_truth):
+    _broker_positions(_broker_truth, [_occ(1), _occ(2)])
+    assert risk._live_position_strategy_count(conn) == 2
+
+
+def test_incident_regression_over_cap_blocks_with_empty_local_db(conn, _broker_truth):
+    """The D58 case: broker holds a full book, local DB was wiped. The cap must
+    still bite — it reads the broker, not the empty orders table."""
+    _broker_positions(_broker_truth, [_occ(i) for i in range(1, 9)])  # 8 held
+    d = risk.check_option(conn, contracts=1, premium_per_contract=200.0)
+    assert d.allowed is False
+    assert "max concurrent positions" in d.reason
+
+
+def test_broker_truth_premium_ceiling_reads_the_broker(conn, _broker_truth, monkeypatch):
+    monkeypatch.setenv("RISK_MAX_OPTION_PREMIUM_AT_RISK", "2500")
+    _broker_positions(_broker_truth, [_occ(1), _occ(2)], cost_basis=1200.0)  # $2,400 live
+    d = risk.check_option(conn, contracts=1, premium_per_contract=300.0)  # +300 -> 2,700
+    assert d.allowed is False
+    assert "total option premium at risk" in d.reason
+
+
+def test_broker_read_failure_with_empty_local_db_blocks(conn, _broker_truth):
+    import mcp_client
+    def boom():
+        raise RuntimeError("mcp unreachable")
+    _broker_truth.setattr(mcp_client, "list_positions", boom)
+    _broker_truth.setattr(mcp_client, "list_open_orders", boom)
+    d = risk.check_option(conn, contracts=1, premium_per_contract=100.0)
+    assert d.allowed is False
+    assert "cannot confirm" in d.reason.lower()
+
+
+def test_broker_read_failure_falls_back_to_local_rows(conn, _broker_truth):
+    import mcp_client
+    def boom():
+        raise RuntimeError("mcp unreachable")
+    _broker_truth.setattr(mcp_client, "list_positions", boom)
+    _broker_truth.setattr(mcp_client, "list_open_orders", boom)
+    _option_order(conn, "held", premium=300.0, status="filled")   # local row exists
+    d = risk.check_option(conn, contracts=1, premium_per_contract=100.0)
+    assert d.allowed is True   # not blind — one known local position, well under caps
+
+
+def test_broker_truth_unions_a_same_cycle_local_order(conn, _broker_truth):
+    _broker_positions(_broker_truth, [_occ(1), _occ(2)])            # 2 at broker
+    _option_order(conn, "just-placed", premium=200.0, status="accepted")  # +1 this cycle
+    assert risk._live_position_strategy_count(conn) == 3
+
+
+def test_broker_truth_off_keeps_local_only_behaviour(conn, monkeypatch):
+    monkeypatch.delenv("BROKER_TRUTH", raising=False)
+    # no MCP stubs at all — must not be consulted
+    for i in range(3):
+        _option_order(conn, f"opt{i}", premium=50.0, status="filled")
+    assert risk._live_position_strategy_count(conn) == 3

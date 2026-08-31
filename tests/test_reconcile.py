@@ -94,3 +94,84 @@ def test_filled_position_gone_from_broker_is_closed(conn, monkeypatch):
     summary = reconcile.reconcile_orders(conn)
     assert summary["closed"] == 1
     assert db.list_orders(conn)[0]["status"] == "reconciled-closed"
+
+
+# --- backfill_positions (D58) -----------------------------------------------
+
+_OCC = "AAPL261009C00330000"
+
+
+def _pos(symbol=_OCC, qty="2", cost_basis="1360.00", avg="6.80"):
+    return {"symbol": symbol, "asset_class": "us_option", "qty": qty,
+            "cost_basis": cost_basis, "avg_entry_price": avg}
+
+
+def test_backfill_reconstructs_an_unknown_broker_position(conn, monkeypatch):
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions", lambda: [_pos()])
+
+    summary = reconcile.backfill_positions(conn)
+    assert summary["reconstructed"] == 1 and summary["symbols"] == [_OCC]
+
+    rows = db.list_orders(conn)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["contract_symbol"] == _OCC and r["status"] == "broker-reconstructed"
+    assert r["reconstructed"] == 1
+    assert r["premium"] == 1360.0
+    assert r["underlying"] == "AAPL" and r["strike"] == 330.0
+    assert "not reconstructed" in r["selection_reason"]
+    # points at the one shared synthetic strategy
+    strat = db.get_strategy(conn, r["strategy_id"])
+    assert strat["dedup_key"] == "__reconstructed__"
+
+
+def test_backfill_derives_cost_basis_from_avg_price_when_missing(conn, monkeypatch):
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions",
+                        lambda: [_pos(cost_basis="0", avg="6.80", qty="2")])
+    reconcile.backfill_positions(conn)
+    assert db.list_orders(conn)[0]["premium"] == 6.80 * 2 * 100
+
+
+def test_backfill_skips_a_position_already_known_locally(conn, monkeypatch):
+    _order(conn, "known", "AAPL", asset_class="option", contract_symbol=_OCC)
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions", lambda: [_pos()])
+    summary = reconcile.backfill_positions(conn)
+    assert summary["reconstructed"] == 0
+    assert len(db.list_orders(conn)) == 1
+
+
+def test_backfill_is_idempotent(conn, monkeypatch):
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions", lambda: [_pos()])
+    reconcile.backfill_positions(conn)
+    reconcile.backfill_positions(conn)
+    assert len(db.list_orders(conn)) == 1
+    # and only one synthetic strategy exists
+    strats = [s for s in db.list_strategies(conn) if s["dedup_key"] == "__reconstructed__"]
+    assert len(strats) == 1
+
+
+def test_backfill_broker_read_failure_changes_nothing(conn, monkeypatch):
+    def boom():
+        raise RuntimeError("mcp down")
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions", boom)
+    summary = reconcile.backfill_positions(conn)
+    assert summary["reconstructed"] == 0 and summary["skipped"]
+    assert db.list_orders(conn) == []
+
+
+def test_sync_with_broker_backfills_then_reconciles(conn, monkeypatch):
+    # local knows about a stale contract the broker no longer holds
+    stale = "MSFT261002C00525000"
+    _order(conn, "stale", "MSFT", status="filled", asset_class="option",
+           contract_symbol=stale)
+    # broker holds a different contract, unknown locally
+    monkeypatch.setattr(reconcile.mcp_client, "list_positions", lambda: [_pos()])
+    monkeypatch.setattr(reconcile.mcp_client, "list_open_orders", lambda: [])
+
+    out = reconcile.sync_with_broker(conn)
+    assert out["backfill"]["reconstructed"] == 1
+    assert out["reconcile"]["closed"] == 1
+
+    rows = {o["contract_symbol"]: o["status"] for o in db.list_orders(conn)}
+    assert rows[_OCC] == "broker-reconstructed"
+    assert rows[stale] == "reconciled-closed"

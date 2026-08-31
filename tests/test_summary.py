@@ -92,3 +92,22 @@ def test_empty_database_still_summarises_without_a_call(conn, monkeypatch):
     monkeypatch.setattr(summary, "_call_llm", lambda facts: "")  # empty -> fallback
     out = summary.get_or_generate(conn)
     assert "no open positions" in out["text"].lower()
+
+
+def test_reconstructed_holdings_are_flagged_in_facts_and_fallback(conn):
+    sid = db.insert_strategy(conn, name="(positions reconstructed from the broker after a restart)",
+                             symbol="—", schema_json="{}", rationale=None, source="manual",
+                             status="active", dedup_key="__reconstructed__")
+    db.insert_order(conn, strategy_id=sid, run_id=None, symbol="AAPL261009C00330000",
+                    qty=2, side="buy", status="broker-reconstructed",
+                    asset_class="option", contract_symbol="AAPL261009C00330000",
+                    underlying="AAPL", strike=330.0, expiry="2026-10-09", premium=1360.0,
+                    selection_reason="Reconstructed from the broker ... not reconstructed.",
+                    reconstructed=True)
+
+    f = summary.build_facts(conn)
+    assert f["holding_reconstructed"] == 1
+    assert f["holding"][0]["reconstructed"] is True
+
+    text = summary._fallback_text(f)
+    assert "rebuilt from the broker" in text

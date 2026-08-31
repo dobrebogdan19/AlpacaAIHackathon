@@ -54,7 +54,10 @@ _SYSTEM = (
     "Rules: use only the numbers provided. Do NOT invent tickers, prices, dates, "
     "market events, or performance claims not present in the data. Do NOT "
     "editorialise about whether it is doing well. If a category is empty, say so "
-    "briefly. No headings, no bullet points, no hype — plain prose."
+    "briefly. If 'holding_reconstructed' is above zero, state plainly that that "
+    "many held positions were rebuilt from the broker after a restart wiped the "
+    "local records, so the positions are real but the strategy/decision history "
+    "for them was lost. No headings, no bullet points, no hype — plain prose."
 )
 
 
@@ -126,12 +129,15 @@ def build_facts(conn) -> dict:
         **_contract_fields(o),
     } for o in sells[:_RECENT]]
 
+    held_rows = [o for o in buys
+                 if str(o["status"]).lower() not in _CLOSED_LIKE
+                 and o.get("contract_symbol") not in sold_contracts]
     holding = [{
         "since": o["created_at"], "strategy": o["strategy_name"],
+        "reconstructed": bool(o["reconstructed"]) if "reconstructed" in o.keys() else False,
         **_contract_fields(o),
-    } for o in buys
-        if str(o["status"]).lower() not in _CLOSED_LIKE
-        and o.get("contract_symbol") not in sold_contracts]
+    } for o in held_rows]
+    holding_reconstructed = sum(1 for h in holding if h["reconstructed"])
 
     retirements = [dict(r) for r in conn.execute(
         """SELECT p.created_at, r.name AS retired, w.name AS replacement
@@ -154,6 +160,7 @@ def build_facts(conn) -> dict:
         "opened": opened,
         "closed": closed,
         "holding": holding,
+        "holding_reconstructed": holding_reconstructed,
         "retirements": retirements,
         "note_to_writer": (
             "These are the only facts. State nothing not present here. Empty list "
@@ -187,6 +194,13 @@ def _fallback_text(facts: dict) -> str:
     if facts["holding"]:
         held = ", ".join(h.get("contract") or h.get("symbol") or "?" for h in facts["holding"])
         parts.append(f"Currently holding: {held}.")
+        recon = facts.get("holding_reconstructed", 0)
+        if recon:
+            parts.append(
+                f"{recon} of those position(s) were rebuilt from the broker after a "
+                f"restart wiped the local records — the positions are real but the "
+                f"strategy and gate reason that opened them were lost."
+            )
     else:
         parts.append("It holds no open positions right now.")
     if facts["retirements"]:

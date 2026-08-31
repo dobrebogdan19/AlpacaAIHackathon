@@ -68,20 +68,53 @@ def config() -> dict:
 # --- one tick -----------------------------------------------------------------
 
 
-def _entry_due(conn) -> tuple[bool, str]:
-    last_iso = db.last_entry_cycle_at(conn)
-    if last_iso is None:
-        return True, "no prior entry cycle"
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
     try:
-        last = datetime.fromisoformat(last_iso)
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
-        return True, f"unparseable last entry time {last_iso!r}"
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _broker_last_trade_at() -> datetime | None:
+    """Timestamp of the most recent order on the paper account, via the MCP path.
+
+    This is the durable answer to "when did we last trade?" — it survives a DB
+    wipe, unlike ``scheduler_ticks`` (D58). A read failure returns ``None`` and
+    the caller falls back to the local marker.
+    """
+    if not os.getenv("BROKER_TRUTH", "").strip().lower() in _TRUTHY:
+        return None
+    try:
+        import mcp_client
+
+        orders = mcp_client.list_recent_orders(limit=100)
+    except Exception as exc:  # noqa: BLE001 — fall back to the local marker
+        log.warning("scheduler: broker order-history read failed (%s)", exc)
+        return None
+    stamps = [
+        _parse_dt(o.get("submitted_at") or o.get("created_at"))
+        for o in orders
+    ]
+    stamps = [s for s in stamps if s is not None]
+    return max(stamps) if stamps else None
+
+
+def _entry_due(conn) -> tuple[bool, str]:
+    local = _parse_dt(db.last_entry_cycle_at(conn))
+    broker = _broker_last_trade_at()
+    last = max([t for t in (local, broker) if t is not None], default=None)
+
+    if last is None:
+        return True, "no prior entry cycle (local or broker)"
+
     delta = datetime.now(timezone.utc) - last
     due = delta >= timedelta(minutes=ENTRY_INTERVAL_MIN)
     mins = int(delta.total_seconds() // 60)
-    return due, (f"{mins} min since last entry cycle"
+    src = "broker" if (broker is not None and (local is None or broker >= local)) else "local"
+    return due, (f"{mins} min since last trade ({src})"
                  f" (interval {ENTRY_INTERVAL_MIN} min)")
 
 
@@ -176,11 +209,12 @@ def _loop() -> None:
         _log_startup_gap(conn)
         try:
             import reconcile
-            summary = reconcile.reconcile_orders(conn)
-            log.info("scheduler startup reconcile: %s open row(s), %s marked closed",
-                     summary["checked"], summary["closed"])
+            summary = reconcile.sync_with_broker(conn)
+            log.info("scheduler startup sync: %s position(s) reconstructed, "
+                     "%s stale row(s) closed",
+                     summary["backfill"]["reconstructed"], summary["reconcile"]["closed"])
         except Exception:  # noqa: BLE001
-            log.exception("startup reconcile failed — continuing")
+            log.exception("startup broker sync failed — continuing")
 
         while not _stop.is_set():
             try:

@@ -144,3 +144,39 @@ def test_startup_row_records_the_gap(conn):
 def test_start_is_a_noop_without_the_env_flag(monkeypatch):
     monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
     assert scheduler.start() is False
+
+
+# --- _entry_due derives "last trade" from the broker after a wipe (D58) ------
+
+
+def test_entry_due_uses_broker_order_history_when_db_is_empty(conn, monkeypatch):
+    """DB wiped (no entry-cycle tick), but the broker says we traded 10 min ago —
+    the scheduler must NOT re-run the entry cycle."""
+    monkeypatch.setenv("BROKER_TRUTH", "1")
+    import mcp_client
+    from datetime import datetime, timezone, timedelta
+    ten_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    monkeypatch.setattr(mcp_client, "list_recent_orders",
+                        lambda limit=100: [{"submitted_at": ten_min_ago}])
+
+    due, why = scheduler._entry_due(conn)
+    assert due is False
+    assert "broker" in why
+
+
+def test_entry_due_broker_read_failure_falls_back_to_db(conn, monkeypatch):
+    monkeypatch.setenv("BROKER_TRUTH", "1")
+    import mcp_client
+    def boom(limit=100):
+        raise RuntimeError("mcp down")
+    monkeypatch.setattr(mcp_client, "list_recent_orders", boom)
+
+    due, why = scheduler._entry_due(conn)
+    assert due is True and "no prior" in why
+
+
+def test_entry_due_ignores_broker_when_flag_is_off(conn, monkeypatch):
+    monkeypatch.delenv("BROKER_TRUTH", raising=False)
+    # list_recent_orders must not even be called — no stub provided
+    due, why = scheduler._entry_due(conn)
+    assert due is True and "no prior" in why

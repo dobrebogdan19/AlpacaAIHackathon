@@ -55,6 +55,14 @@ services:
       # order/position state from the account on startup (reconcile.py).
       - key: SKIP_SEED_BOOTSTRAP
         value: "1"
+      # D58: the free tier wipes the /tmp DB on every restart. With this on,
+      # risk.py measures its ceilings against the BROKER (positions + working
+      # orders), reconcile.py rebuilds lost order rows from the broker on boot,
+      # and the scheduler reads "when did we last trade?" from broker order
+      # history — so a wipe can no longer make the agent trade blind or re-run a
+      # cycle it already did. Off in tests / local dev (local rows only).
+      - key: BROKER_TRUTH
+        value: "1"
       # Gate recalibrated for a four-day live window (D50): only min_trades moves
       # (10 -> 3). The strict default stays in gate.py for the historical seed.
       - key: GATE_MIN_TRADES

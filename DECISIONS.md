@@ -1106,3 +1106,85 @@ hierarchy rather than rivalling it.
 *Rejected:* recolouring or reweighting headings for presence (character change,
 not proportion � out of scope); touching the `.bias-num` instrument readout
 (a data figure deep in the page, not a heading).
+
+
+### D58 -- Restart incident: broker becomes the source of truth for risk state
+
+**What happened (2026-08-31).** The T6.4-T6.6 dashboard work (D54-D57) was
+deployed at ~16:53 Bucharest, in a window the operator had approved, ~20 min
+after the day's first entry cycle (16:32: 16 generated, 8 promoted, 8 orders, 7
+filled, 6 option positions). The deploy restarted the Render free-tier instance.
+The free tier has no persistent disk, so `DB_PATH=/tmp/trading.db` was wiped, and
+`SKIP_SEED_BOOTSTRAP=1` meant it came back empty. The scheduler started, saw no
+`scheduler_ticks` row for a prior entry cycle, concluded it had never traded, and
+on its first market-open tick (~16:58) ran a **full second entry cycle**: 8 more
+orders. Account went from 6 positions to 9.
+
+**Root cause.** `risk.py` measured both ceilings -- max concurrent positions and
+total option premium at risk -- by counting rows in the local `orders` table.
+`reconcile.py` only ever flipped existing rows to closed; it never rebuilt rows
+from the broker. So when the wipe emptied `orders`, `risk` saw **0 positions /
+$0 premium** and passed all 8 promotions. `scheduler._entry_due` had the same
+single-source weakness: the "last entry cycle" marker also lived only in the
+wiped DB.
+
+**What breached.** With the D53 competition caps (`RISK_MAX_CONCURRENT_POSITIONS=8`,
+`RISK_MAX_OPTION_PREMIUM_AT_RISK=8000`):
+- concurrent positions: **9** vs 8 allowed
+- option premium at risk: **~$10,300** vs $8,000 allowed (the ~$4,900 from the
+  first cycle was invisible to the check)
+- portfolio at the time: ~$98,700, P&L ~-$1,300 (-1.3%); the drift since is
+  market movement, not new trading.
+
+The over-cap positions were **left in place** on purpose -- the honest record of
+what happened is worth more than a tidied account.
+
+**What changed.**
+1. **Scheduler halted** (`SCHEDULER_ENABLED=0`, commit bfccefd) the moment the
+   incident was understood. Stays off until the fix is verified on the deployed
+   instance.
+2. **`BROKER_TRUTH=1`** (new env flag, deploy-only; off in tests/local so the
+   suite is unchanged). With it on:
+   - `risk.py` computes both ceilings from the **broker** -- open option
+     positions + working option orders via the MCP path -- unioned with local
+     non-terminal rows so an order placed earlier in the *same* cycle still
+     counts before the broker reports it. Result memoised ~20s so a cycle does
+     one round trip, not one per candidate.
+   - Fail-safe: if the broker read fails **and** there are no local rows to fall
+     back on, `risk` blocks new entries. A wedged agent beats a blind one (same
+     principle as `reconcile.py`'s existing "stuck cap is safer").
+   - `reconcile.backfill_positions` inserts one `reconstructed` order row per
+     open broker position that has no local row, built only from broker facts
+     (contract, qty, cost basis), pointing at a single shared synthetic strategy
+     (`dedup_key='__reconstructed__'`, `source='manual'`). The strategy rules and
+     the gate reason are **not** invented -- `selection_reason` says so plainly,
+     and a new `orders.reconstructed` flag lets the dashboard label the row.
+   - `scheduler._entry_due` takes `max(local marker, latest broker order
+     timestamp)` -- new `mcp_client.list_recent_orders()`. After a wipe the
+     broker's own order history says "you traded 20 minutes ago", so no
+     catch-up cycle.
+   - Startup guard: `reconcile` logs a loud WARNING naming any broker position
+     the local DB did not know about, then proceeds on broker truth.
+   - `api._lifespan` runs the broker sync at boot when the scheduler is off, so
+     the manual `POST /api/cycle` path is protected too.
+3. **Dashboard** states plainly that run/decision history resets on every
+   free-tier restart and only covers time since the instance last started, that
+   positions and orders are read back from the broker and survive restarts, and
+   labels reconstructed rows as such. `summary.py` folds reconstructed holdings
+   into its facts and says when holdings were rebuilt (no more "holds nothing"
+   while the account panel shows positions).
+
+**Persistence, explicitly not done.** Render free-tier has no persistent disk;
+its free Postgres expires 30 days after creation. Litestream to Cloudflare R2 or
+Backblaze B2 was the free-code option but every such bucket now requires a
+registered payment card. Decision: **do not pay, do not register a card, accept
+that run/decision history resets on restart.** It is compensated where free --
+positions and orders are reconstructed from the broker, and the dashboard is
+honest about the rest. If a zero-account, zero-card way to persist the decision
+log appears (e.g. committing periodic DB snapshots back to the repo), revisit.
+
+*Rejected:* paid Render instance + disk (~$7.25/mo -- operator will not pay);
+Litestream + R2/B2 (card required); trimming the over-cap positions to tidy the
+account (the breach is part of the record); keeping `risk` on local rows and
+only fixing `reconcile` (leaves `risk` blind for the seconds between boot and
+the first successful broker read, and offers no fail-safe).

@@ -268,6 +268,15 @@ SVG (D29). Served at `/` by `api.py`.
       state plainly in the retirement / selection-bias / forward-tracking /
       calibration panels that the as-of study ran on `seed.db`, not this live
       instance, when they have no data.
+- [x] **T6.7** (D58) Broker is the source of truth for risk state. `BROKER_TRUTH=1`:
+      `risk.py` measures the position and premium ceilings against the broker
+      (positions + working orders), unioned with same-cycle local rows;
+      fail-safe blocks when the broker read fails with no local fallback;
+      `reconcile.backfill_positions` rebuilds lost order rows from the broker as
+      `reconstructed` rows; `scheduler._entry_due` derives "last traded" from
+      broker order history. Dashboard states the free-tier history reset plainly.
+      *Accept:* after a restart of the deployed instance with 9 positions open,
+      `risk` reports 9 and blocks a 10th; no catch-up entry cycle fires.
 
 ---
 
