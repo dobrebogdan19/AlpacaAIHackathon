@@ -277,6 +277,14 @@ SVG (D29). Served at `/` by `api.py`.
       broker order history. Dashboard states the free-tier history reset plainly.
       *Accept:* after a restart of the deployed instance with 9 positions open,
       `risk` reports 9 and blocks a 10th; no catch-up entry cycle fires.
+- [x] **T6.8** (D59) Persist the history the broker can't give back. `GET
+      /api/db-snapshot` (consistent gzip via `Connection.backup`, `cache:*`
+      stripped); `.github/workflows/db-snapshot.yml` pulls it every ~30 min,
+      scans for secrets, force-pushes to the orphan `snapshots` branch;
+      `api._restore_from_snapshot()` loads it on boot only when `runs == 0`.
+      Free (public repo + `GITHUB_TOKEN`), no autodeploy, no scheduler halt.
+      *Accept:* a restart with a published snapshot restores the decision log and
+      equity curves; a restart with live rows already present does not touch them.
 
 ---
 

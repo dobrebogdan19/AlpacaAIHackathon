@@ -1005,16 +1005,16 @@ increasing the tick frequency instead of the universe (no new information on
 daily bars — D49).
 
 
-### D54 � Dashboard reads the live paper account: `GET /api/account`, cached, last-known-on-failure
+### D54 — Dashboard reads the live paper account: `GET /api/account`, cached, last-known-on-failure
 
 The hackathon's first judging criterion is realised paper-account P&L, judged by
 inspecting the Alpaca account directly. Our own dashboard showed nothing about
-account state � a real gap. `account.py` fills it: portfolio value, cash, total
+account state — a real gap. `account.py` fills it: portfolio value, cash, total
 P&L against the fixed `STARTING_BALANCE = 100_000.0`, and every open option
 position with its unrealised P&L.
 
 It is the **one** dashboard GET that touches the network. Every other read
-renders from stored rows only (D6); this one cannot � the number has to be live
+renders from stored rows only (D6); this one cannot — the number has to be live
 to match what a judge sees. It goes through the **MCP path** (`mcp_client.check_connection`
 + `list_positions`), not a direct SDK client, same as the order path.
 
@@ -1025,24 +1025,24 @@ collapse to one fetch. A failed live read serves the last cached snapshot with
 `stale: true` and its timestamp; with no cache at all, `{"available": false}`.
 The panel always shows a number or an honest "unavailable", never a 500.
 
-*Rejected:* a direct `alpaca-py` client (D7 � the MCP path is the sponsor
+*Rejected:* a direct `alpaca-py` client (D7 — the MCP path is the sponsor
 integration and must be the one that moves money-adjacent data); a new SQLite
 table for the cache (the `system_state` kv table already exists for exactly this
 kind of small transient value); no cache (every dashboard load and every pinger
 hit would spawn the MCP subprocess); computing P&L from stored order rows
-instead of the live account (it would drift from the account a judge inspects �
+instead of the live account (it would drift from the account a judge inspects —
 the whole point).
 
 
-### D55 � Plain-language activity summary: LLM over a facts dict of stored rows, cached hourly
+### D55 — Plain-language activity summary: LLM over a facts dict of stored rows, cached hourly
 
-The dashboard reads like an engineer's output � decision tables, metric strings,
+The dashboard reads like an engineer's output — decision tables, metric strings,
 order rows. `summary.py` adds a 3-5 sentence plain-English note near the top:
 how many cycles ran, what was opened and the stated reason, what was closed and
 why, what is held now.
 
 Same discipline as the post-mortem writer (D37): the LLM is handed **only** a
-facts dict built from real stored numbers (`build_facts` � runs, scheduler tick
+facts dict built from real stored numbers (`build_facts` — runs, scheduler tick
 counts, order rows joined to their strategy's rationale, retirements) and the
 system prompt forbids inventing tickers, prices, dates, or performance claims
 not in the data. `_fallback_text` renders the same facts plainly when the call
@@ -1055,18 +1055,18 @@ cache is missing or older than `SUMMARY_MAX_AGE_S` (3600). The frontend fetches
 it asynchronously alongside every other panel, so the slow first generation
 never blocks the rest of the page.
 
-*Rejected:* generating on every page load (wasteful and slow � the brief says
-at most hourly); free-text narrative not tied to stored numbers (D25/D37 � the
+*Rejected:* generating on every page load (wasteful and slow — the brief says
+at most hourly); free-text narrative not tied to stored numbers (D25/D37 — the
 one thing this project must not do is let the model narrate beyond the
 evidence); a background regeneration thread (another moving part; a lazy
 hourly refresh on read is enough).
 
 
-### D56 � Empty as-of panels say the analysis ran on `seed.db`, not "no data yet"
+### D56 — Empty as-of panels say the analysis ran on `seed.db`, not "no data yet"
 
 The live competition instance starts from an empty database (`SKIP_SEED_BOOTSTRAP`,
-D49). The regret-ledger study � selection-bias spread, shadow curves, the gate
-calibration proposal, the one retirement it produced � lives in `seed.db` and
+D49). The regret-ledger study — selection-bias spread, shadow curves, the gate
+calibration proposal, the one retirement it produced — lives in `seed.db` and
 was run on a separate development dataset. On the live instance those four
 panels have no data and never will: that account has days of history, not the
 months the as-of split needs.
@@ -1077,34 +1077,34 @@ on `seed.db` in the repo, and that it is not reproduced here because it is not
 this instance's data. One shared `devDataNote()` helper, per-panel wording.
 
 This also removed the old `loadHero` fallback that drew plain backtest curves in
-the forward-tracking section when no as-of run existed � on the live instance
+the forward-tracking section when no as-of run existed — on the live instance
 that would have mislabelled ordinary in-sample curves as forward tracking.
 
 *Rejected:* seeding the live instance with `seed.db` so the panels populate (D49
-� the competition account trades clean, and the as-of analysis is a different
+— the competition account trades clean, and the as-of analysis is a different
 account's history); hiding the panels entirely (the analysis is real work and
-part of the story � the honest move is to point at where it lives, not to erase
+part of the story — the honest move is to point at where it lives, not to erase
 it); a generic "no data" string (reads as a bug or a pending state, not a
 deliberate separation of datasets).
 
 
-### D57 � Dashboard lede and top hierarchy: shorter copy, smaller title
+### D57 — Dashboard lede and top hierarchy: shorter copy, smaller title
 
 The header lede had grown to a five-sentence paragraph that read like generated
-marketing copy � rhetorical build-up before any concrete claim. Cut to three
+marketing copy — rhetorical build-up before any concrete claim. Cut to three
 plain sentences plus the "paper trading only" tag: what the agent does, why the
 rejections matter, when it retires a strategy.
 
-Proportion, not redesign � palette and typography unchanged. The `h1` clamp was
+Proportion, not redesign — palette and typography unchanged. The `h1` clamp was
 oversized against everything below it (max 1.95rem vs 0.875rem section headings);
-brought to a 1.3�1.55rem clamp. Section `h2` nudged 0.875�0.9rem with tighter
+brought to a 1.3–1.55rem clamp. Section `h2` nudged 0.875–0.9rem with tighter
 tracking for a little more presence. Top rhythm tightened: header padding
-26/22 � 22/20, `main` padding-top 34 � 24. `.acct-value` clamp lowered
-(1.65 � 1.45rem max) so the incoming account panel sits below the title in the
+26/22 → 22/20, `main` padding-top 34 → 24. `.acct-value` clamp lowered
+(1.65 → 1.45rem max) so the incoming account panel sits below the title in the
 hierarchy rather than rivalling it.
 
 *Rejected:* recolouring or reweighting headings for presence (character change,
-not proportion � out of scope); touching the `.bias-num` instrument readout
+not proportion — out of scope); touching the `.bias-num` instrument readout
 (a data figure deep in the page, not a heading).
 
 
@@ -1188,3 +1188,56 @@ Litestream + R2/B2 (card required); trimming the over-cap positions to tidy the
 account (the breach is part of the record); keeping `risk` on local rows and
 only fixing `reconcile` (leaves `risk` blind for the seconds between boot and
 the first successful broker read, and offers no fail-safe).
+
+
+### D59 -- GitHub Actions DB snapshots: persist the history the broker can't give back
+
+D58 makes a /tmp wipe *safe* (risk reads the broker; positions/orders are
+reconstructed). It does not make it *lossless*: backtests, the decision log, run
+history and scheduler ticks have no broker equivalent, so the equity chart and
+most of the decision log reset on every restart -- the dashboard looks emptier
+than the system is, which a judge would notice.
+
+**Mechanism.**
+- `GET /api/db-snapshot` -- `sqlite3.Connection.backup` takes a consistent copy
+  even while the scheduler writes; `cache:*` rows in `system_state` are dropped;
+  gzipped with `mtime=0` so an unchanged DB is byte-identical between calls.
+- `.github/workflows/db-snapshot.yml` -- every ~30 min (and on demand) pulls that
+  file, validates it (gzip + SQLite magic + opens + has a `runs` table), runs
+  `.github/scripts/scan_snapshot.py` (fails the job on anything key-shaped in any
+  text column), and force-pushes it to the orphan `snapshots` branch as a single
+  commit. Public repo + `GITHUB_TOKEN` only -- no card, no external account.
+- `api._restore_from_snapshot()` -- on boot, if the local DB has zero `runs`,
+  fetch `https://raw.githubusercontent.com/<repo>/snapshots/trading.db.gz` and
+  load it. Then `reconcile.sync_with_broker` (D58) corrects the position view on
+  top. The restore runs before `seed.db` and before the `SKIP_SEED_BOOTSTRAP`
+  early-return, so the competition instance gets its own history back, not the
+  dev seed.
+
+**Never overwrites newer data.** Restore is gated on `runs == 0`. The scheduler
+writes a `startup` tick and reconcile writes rows within seconds of boot, so a
+live DB is never "empty" -- the only time restore fires is immediately after a
+wipe, when there is nothing to lose. A snapshot is at most ~30 min stale;
+anything the agent did in that window and did not snapshot is genuinely gone (an
+honest limit, stated on the dashboard).
+
+**No secrets in the snapshot.** Credentials are env vars, never written to the
+DB. Verified: the scan script greps every text value in every table against
+Alpaca / OpenAI / AWS / GitHub / Slack / PEM key shapes and fails the job on a
+hit; it is also a unit test (clean DB passes, planted `sk-proj-...` fails). The
+DB's contents (orders with broker ids and raw MCP JSON, runs, decisions) are
+already served by the read endpoints -- the snapshot is not a new disclosure.
+
+**Autodeploy is not triggered.** Render autodeploys `main`; snapshots go to the
+orphan `snapshots` branch, which it ignores. No restart, no scheduler halt.
+
+*Rejected:* Render paid instance + disk / Litestream + R2 / Backblaze B2 (all
+need a card, D58); committing snapshots to `main` (every 30 min -> an autodeploy
+loop, or a fragile Render "ignored paths" dashboard setting); the app committing
+its own snapshots via a PAT (a credential to manage; the workflow-pull path uses
+the auto `GITHUB_TOKEN`); restoring always and merging (a stale snapshot would
+clobber live rows -- restore-only-when-empty is the safe rule).
+
+**Scope note.** CLAUDE.md says no CI pipelines. This is not CI (it runs no tests,
+gates no merges) -- it is a data-persistence cron that happens to run on Actions
+because that is the free scheduler we already have. Explicitly requested.

@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 import db
 
@@ -42,24 +42,85 @@ _cycle_lock = threading.Lock()
 _cycle_state = {"running": False, "last_started": 0.0, "last_run_id": None}
 
 
-def _bootstrap_db() -> None:
-    """On first boot against an empty volume, seed from the committed ``seed.db``.
+# D59: the free tier wipes /tmp on every restart. The broker gives back positions
+# and orders (reconcile.py, D58) but NOT backtests, the decision log, run history
+# or scheduler ticks. A GitHub Actions job pulls GET /api/db-snapshot every
+# ~30 min and force-pushes a gzipped copy to the orphan ``snapshots`` branch; on
+# boot, if the DB is empty, we restore history from that raw URL. Never overwrites
+# a non-empty DB — restore only when there is nothing to lose.
+SNAPSHOT_URL = os.getenv(
+    "DB_SNAPSHOT_URL",
+    "https://raw.githubusercontent.com/dobrebogdan19/AlpacaAIHackathon/snapshots/trading.db.gz",
+)
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 
-    Only runs when ``DB_PATH`` is set explicitly (i.e. a deploy pointing at a
-    persistent volume). Local dev, with no ``DB_PATH``, uses ``bars_cache.db`` as
-    it finds it — this never overwrites a developer's working database.
+
+def _db_row_count(path: Path) -> int | None:
+    """Rows in ``runs``, or None if the file is absent / not a usable DB."""
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        c = sqlite3.connect(path)
+        try:
+            return int(c.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return None
+
+
+def _restore_from_snapshot() -> bool:
+    """Restore history from the committed GitHub snapshot IFF the local DB is
+    empty. Returns True on a successful restore. Never touches a non-empty DB."""
+    target = db.DB_PATH
+    if (_db_row_count(target) or 0) > 0:
+        return False
+    try:
+        import gzip
+        import urllib.request
+
+        with urllib.request.urlopen(SNAPSHOT_URL, timeout=15) as resp:  # noqa: S310 — fixed https URL
+            raw = gzip.decompress(resp.read())
+    except Exception as exc:  # noqa: BLE001 — no snapshot yet / offline => empty start
+        log.info("snapshot restore: none applied (%s)", exc)
+        return False
+    if raw[:16] != _SQLITE_MAGIC:
+        log.warning("snapshot restore: fetched blob is not a SQLite file — ignoring")
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(raw)
+    n = _db_row_count(target)
+    if not n:
+        log.warning("snapshot restore: restored DB has no runs — continuing empty")
+        return False
+    log.info("snapshot restore: %d bytes, %d run(s) recovered from %s",
+             len(raw), n, SNAPSHOT_URL)
+    return True
+
+
+def _bootstrap_db() -> None:
+    """Populate the DB on first boot against an empty volume.
+
+    Only runs when ``DB_PATH`` is set (a real deploy). Order of preference:
+      1. our own committed history snapshot (D59) — the backtests / decision log
+         the broker cannot give back;
+      2. nothing, if ``SKIP_SEED_BOOTSTRAP`` (the competition account has no seed
+         lineage; reconcile.py rebuilds positions from the broker, D49/D58);
+      3. the committed ``seed.db`` (dev / demo instances).
     """
     if not os.getenv("DB_PATH"):
-        return
-    if os.getenv("SKIP_SEED_BOOTSTRAP", "").strip().lower() in {"1", "true", "yes", "on"}:
-        # The competition instance trades a fresh dedicated paper account and
-        # starts from an empty database; the scheduler's startup reconciliation
-        # (reconcile.py) syncs order/position state from that account (D49).
-        log.info("SKIP_SEED_BOOTSTRAP set — starting with an empty database")
         return
     target = db.DB_PATH
     if target.exists() and target.stat().st_size > 0:
         return
+
+    if _restore_from_snapshot():
+        return
+
+    if os.getenv("SKIP_SEED_BOOTSTRAP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        log.info("SKIP_SEED_BOOTSTRAP set and no snapshot — starting with an empty database")
+        return
+
     seed = Path(__file__).with_name("seed.db")
     if seed.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -663,6 +724,52 @@ def scheduler_status(probe: int = 0):
         return out
     finally:
         conn.close()
+
+
+@app.get("/api/db-snapshot")
+def db_snapshot():
+    """A consistent gzipped copy of the SQLite DB for the GitHub Actions history
+    snapshot (D59).
+
+    ``Connection.backup`` takes a consistent copy even while the scheduler is
+    writing. Transient ``cache:*`` rows in ``system_state`` are dropped from the
+    copy. Everything else here is already served by the read endpoints
+    (``/api/runs``, ``/api/orders``, …) — no new disclosure. No credentials:
+    keys live in env vars and are never written to the database.
+    """
+    import gzip
+    import tempfile
+
+    src = db.DB_PATH
+    if not src.exists() or src.stat().st_size == 0:
+        raise HTTPException(503, "no database to snapshot yet")
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="dbsnap-"))
+    tmp = tmpdir / "trading.db"
+    try:
+        source = sqlite3.connect(src)
+        try:
+            dest = sqlite3.connect(tmp)
+            try:
+                source.backup(dest)
+                dest.execute("DELETE FROM system_state WHERE key LIKE 'cache:%'")
+                dest.commit()
+            finally:
+                dest.close()
+        finally:
+            source.close()
+        # mtime=0 so an unchanged DB compresses to identical bytes — lets the
+        # snapshot workflow skip a no-op commit when the instance was asleep.
+        blob = gzip.compress(tmp.read_bytes(), compresslevel=9, mtime=0)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return Response(
+        content=blob,
+        media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="trading.db.gz"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/mcp-check")
