@@ -118,6 +118,27 @@ def _entry_due(conn) -> tuple[bool, str]:
                  f" (interval {ENTRY_INTERVAL_MIN} min)")
 
 
+def entry_check(conn) -> dict:
+    """What ``_entry_due`` would decide right now, with its inputs shown.
+
+    Read-only and safe to call from an HTTP handler, but it DOES do one MCP round
+    trip (``list_recent_orders``) when ``BROKER_TRUTH`` is set — so it is only
+    reached from ``/api/scheduler`` behind an explicit ``?probe=1``, never on a
+    plain page load (D6). Lets an operator confirm "no catch-up entry cycle
+    fires after a restart" without watching a live tick (D58).
+    """
+    local = _parse_dt(db.last_entry_cycle_at(conn))
+    broker = _broker_last_trade_at()
+    due, why = _entry_due(conn)
+    return {
+        "entry_due": due,
+        "why": why,
+        "local_last_entry_at": local.isoformat() if local else None,
+        "broker_last_trade_at": broker.isoformat() if broker else None,
+        "entry_interval_min": ENTRY_INTERVAL_MIN,
+    }
+
+
 def _run_entry_cycle(conn) -> tuple[int, str]:
     import cycle
     from seeds import generate_with_seeds

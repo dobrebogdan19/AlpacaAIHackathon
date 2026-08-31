@@ -180,3 +180,18 @@ def test_entry_due_ignores_broker_when_flag_is_off(conn, monkeypatch):
     # list_recent_orders must not even be called — no stub provided
     due, why = scheduler._entry_due(conn)
     assert due is True and "no prior" in why
+
+
+def test_entry_check_reports_inputs_and_verdict(conn, monkeypatch):
+    monkeypatch.setenv("BROKER_TRUTH", "1")
+    import mcp_client
+    from datetime import datetime, timezone, timedelta
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    monkeypatch.setattr(mcp_client, "list_recent_orders",
+                        lambda limit=100: [{"submitted_at": recent}])
+
+    chk = scheduler.entry_check(conn)
+    assert chk["entry_due"] is False          # 30 min < 180 min interval
+    assert chk["broker_last_trade_at"] is not None
+    assert chk["local_last_entry_at"] is None
+    assert chk["entry_interval_min"] == 180

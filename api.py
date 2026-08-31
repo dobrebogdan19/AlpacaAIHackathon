@@ -630,11 +630,16 @@ def trigger_cycle(background_tasks: BackgroundTasks):
 
 
 @app.get("/api/scheduler")
-def scheduler_status():
+def scheduler_status(probe: int = 0):
     """The autonomous scheduler's config and its recent tick log (T5.3).
 
     Pure SELECT over ``scheduler_ticks`` plus the in-process config — rendering
     this never needs the scheduler to be running (D6).
+
+    ``?probe=1`` additionally returns ``entry_check``: what ``_entry_due`` would
+    decide right now and the broker/local timestamps it derives that from. That
+    branch does one MCP round trip (D58 verification: confirm no catch-up entry
+    cycle after a restart), so it is opt-in and never runs on a page load.
     """
     import scheduler
 
@@ -644,12 +649,18 @@ def scheduler_status():
                       "SELECT * FROM scheduler_ticks ORDER BY id DESC LIMIT 100")
         counts = _rows(conn,
                        "SELECT action, COUNT(*) AS n FROM scheduler_ticks GROUP BY action")
-        return {
+        out = {
             "config": scheduler.config(),
             "last_entry_cycle_at": db.last_entry_cycle_at(conn),
             "tick_counts": {r["action"]: r["n"] for r in counts},
             "ticks": ticks,
         }
+        if probe:
+            try:
+                out["entry_check"] = scheduler.entry_check(conn)
+            except Exception as exc:  # noqa: BLE001 — a probe failure is not a 500
+                out["entry_check"] = {"error": str(exc)}
+        return out
     finally:
         conn.close()
 

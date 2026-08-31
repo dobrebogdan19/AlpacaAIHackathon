@@ -191,6 +191,15 @@ def test_scheduler_endpoint_reads_ticks_and_config(client, monkeypatch):
     assert body["config"]["enabled"] is False
     assert body["tick_counts"]["skipped-market-closed"] == 1
     assert body["ticks"][0]["action"] == "manage-only"        # DESC
+    assert "entry_check" not in body                          # plain load: no MCP probe (D6)
+
+
+def test_scheduler_probe_returns_entry_check(client, monkeypatch):
+    import scheduler
+    monkeypatch.setattr(scheduler, "entry_check",
+                        lambda conn: {"entry_due": False, "why": "30 min since last trade (broker)"})
+    body = client.get("/api/scheduler?probe=1").json()
+    assert body["entry_check"]["entry_due"] is False
 
 
 def test_calibration_endpoint_returns_latest_record(client):
