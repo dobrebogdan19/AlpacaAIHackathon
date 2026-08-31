@@ -85,18 +85,25 @@ async def _lifespan(_app):
     # boot — reconstruct any positions a wipe lost so risk.py is not blind. The
     # scheduler does this itself when it runs; do it here when it does not, so the
     # manual POST /api/cycle path is safe too. Exactly one sync per boot.
+    #
+    # Runs in a worker thread: the MCP client uses ``asyncio.run`` internally,
+    # which cannot be called from this already-running event loop.
     if os.getenv("DB_PATH") and not scheduler.enabled():
-        try:
-            import reconcile
-            conn = db.connect()
+        def _startup_sync() -> None:
             try:
-                summary = reconcile.sync_with_broker(conn)
-                log.info("startup broker sync: %s position(s) reconstructed, %s stale closed",
-                         summary["backfill"]["reconstructed"], summary["reconcile"]["closed"])
-            finally:
-                conn.close()
-        except Exception:  # noqa: BLE001 — never block startup on the MCP path
-            log.exception("startup broker sync failed — API still serving")
+                import reconcile
+                conn = db.connect()
+                try:
+                    s = reconcile.sync_with_broker(conn)
+                    log.info("startup broker sync: %s position(s) reconstructed, %s stale closed",
+                             s["backfill"]["reconstructed"], s["reconcile"]["closed"])
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001 — never block startup on the MCP path
+                log.exception("startup broker sync failed — API still serving")
+
+        import asyncio
+        await asyncio.to_thread(_startup_sync)
 
     try:
         scheduler.start()

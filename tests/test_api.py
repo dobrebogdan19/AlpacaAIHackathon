@@ -267,3 +267,35 @@ def test_cycle_triggers_background_run_and_rate_limits(client, monkeypatch):
 
     second = client.post("/api/cycle")
     assert second.status_code == 429
+
+
+def test_startup_runs_the_broker_sync_off_the_event_loop(tmp_path, monkeypatch):
+    """D58: on a real deploy the lifespan reconciles against the broker at boot.
+
+    It must run in a worker thread — the MCP client calls ``asyncio.run``, which
+    blows up on the running event loop. Regression test for exactly that bug.
+    """
+    import threading
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "boot.db"))
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+
+    import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "boot.db")
+    import api, reconcile
+
+    seen = {}
+
+    def fake_sync(conn):
+        import asyncio
+        # what mcp_client does internally — must NOT be on a running event loop
+        asyncio.run(asyncio.sleep(0))
+        seen["thread"] = threading.current_thread()
+        return {"backfill": {"reconstructed": 0}, "reconcile": {"closed": 0}}
+
+    monkeypatch.setattr(reconcile, "sync_with_broker", fake_sync)
+
+    with TestClient(api.app):
+        pass
+
+    assert "thread" in seen, "startup sync did not complete (asyncio.run on the event loop?)"
