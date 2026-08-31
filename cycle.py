@@ -31,12 +31,25 @@ import db
 import engine
 import gate
 import mcp_client
+import options
 import risk
 
 log = logging.getLogger("cycle")
 
-# Fixed notional per position (CLAUDE.md). One knob, here.
+# How a promoted signal is *expressed* (D48). The backtest / gate always speak in
+# the underlying equity; this only changes what gets traded when a signal fires:
+#   "options" — select a single-leg long call on the underlying (the hackathon
+#               requires options; this is the default)
+#   "equity"  — buy shares (the original Phase 3 path, kept working; one line to
+#               switch back)
+EXPRESSION = "options"
+
+# Fixed notional per position for the equity path (CLAUDE.md). One knob, here.
 FIXED_ORDER_NOTIONAL_USD = 1_000.0
+# Fixed contract count per position for the option path — fixed size, like the
+# fixed notional above (premium varies by contract, so the dollar risk is not
+# constant; the per-position and total-premium ceilings in risk.py bound it).
+FIXED_OPTION_CONTRACTS = 1
 BARS_LOOKBACK_DAYS = 400          # ~250 trading days
 
 
@@ -51,6 +64,8 @@ class StrategyOutcome:
     order_status: str | None = None
     broker_order_id: str | None = None
     order_blocked_reason: str | None = None
+    contract_symbol: str | None = None
+    contract_reason: str | None = None
 
 
 @dataclass
@@ -61,6 +76,7 @@ class CycleResult:
     n_rejected: int
     n_orders_submitted: int
     n_orders_blocked: int
+    n_orders_skipped: int
     dry_run: bool
     outcomes: list[StrategyOutcome] = field(default_factory=list)
 
@@ -68,18 +84,124 @@ class CycleResult:
         lines = [
             f"run {self.run_id}: generated {self.n_generated}, "
             f"promoted {self.n_promoted}, rejected {self.n_rejected}, "
-            f"orders {self.n_orders_submitted} (blocked {self.n_orders_blocked}), "
-            f"dry_run={self.dry_run}",
+            f"orders {self.n_orders_submitted} (blocked {self.n_orders_blocked}, "
+            f"skipped {self.n_orders_skipped}), dry_run={self.dry_run}",
         ]
         for o in self.outcomes:
             tag = "PROMOTED" if o.promoted else "REJECTED"
             lines.append(f"  [{tag}] {o.name} ({o.symbol}) — {o.decision_reason}")
+            if o.contract_reason:
+                lines.append(f"           contract: {o.contract_reason}")
             if o.order_blocked_reason:
                 lines.append(f"           order BLOCKED: {o.order_blocked_reason}")
             elif o.order_status:
                 lines.append(f"           order: {o.order_status} "
-                             f"(id={o.broker_order_id or '-'})")
+                             f"({o.contract_symbol or o.symbol}, id={o.broker_order_id or '-'})")
         return "\n".join(lines)
+
+
+@dataclass
+class _ExecCounts:
+    submitted: int = 0
+    blocked: int = 0
+    skipped: int = 0
+
+
+def _execute_via_equity(
+    conn, run_id, strat, sid, outcome: StrategyOutcome, *,
+    order_notional: float, dry_run: bool | None, is_dry: bool,
+) -> _ExecCounts:
+    """Original Phase 3 path: risk check, then a share order through the MCP server."""
+    rd = risk.check(conn, notional=order_notional, dry_run=dry_run)
+    if not rd.allowed:
+        db.insert_order(
+            conn, strategy_id=sid, run_id=run_id, symbol=strat.symbol,
+            qty=None, side="buy", status="blocked", broker_order_id=None,
+            submitted_via="mcp", dry_run=is_dry, raw_response=rd.reason,
+        )
+        outcome.order_status = "blocked"
+        outcome.order_blocked_reason = rd.reason
+        return _ExecCounts(blocked=1)
+
+    res = mcp_client.submit_market_order(
+        strat.symbol, notional=order_notional, side="buy", dry_run=dry_run,
+    )
+    db.insert_order(
+        conn, strategy_id=sid, run_id=run_id, symbol=strat.symbol,
+        qty=res.qty, side="buy", status=res.status,
+        broker_order_id=res.broker_order_id, submitted_via="mcp",
+        dry_run=is_dry, raw_response=res.raw or (res.error or ""),
+    )
+    outcome.order_status = res.status
+    outcome.broker_order_id = res.broker_order_id
+    return _ExecCounts(submitted=1 if (res.ok and res.status != "dry_run") else 0)
+
+
+def _execute_via_option(
+    conn, run_id, strat, sid, bars, outcome: StrategyOutcome, *,
+    dry_run: bool | None, is_dry: bool,
+) -> _ExecCounts:
+    """D48 path: the signal came from the underlying; the expression is a long call.
+
+    Spot is the underlying's last close (a live run decides on bar N's close and
+    fills at N+1's open — the same bar the contract is chosen against). A chain
+    with no qualifying contract is recorded as a ``skipped`` order with the
+    reason and does NOT crash the cycle.
+    """
+    spot = float(bars[-1]["close"])
+    choice = options.select_contract(strat.symbol, spot)
+
+    if isinstance(choice, options.NoContract):
+        log.info("NO CONTRACT for %s — %s", strat.symbol, choice.reason)
+        db.insert_order(
+            conn, strategy_id=sid, run_id=run_id, symbol=strat.symbol,
+            qty=None, side="buy", status="skipped", broker_order_id=None,
+            submitted_via="mcp", dry_run=is_dry, raw_response=choice.reason,
+            asset_class="option", underlying=strat.symbol,
+            selection_reason=choice.reason,
+        )
+        outcome.order_status = "skipped"
+        outcome.contract_reason = choice.reason
+        return _ExecCounts(skipped=1)
+
+    outcome.contract_symbol = choice.occ_symbol
+    outcome.contract_reason = choice.reason
+    qty = FIXED_OPTION_CONTRACTS
+
+    rd = risk.check_option(
+        conn, contracts=qty, premium_per_contract=choice.premium, dry_run=dry_run,
+    )
+    if not rd.allowed:
+        db.insert_order(
+            conn, strategy_id=sid, run_id=run_id, symbol=choice.occ_symbol,
+            qty=None, side="buy", status="blocked", broker_order_id=None,
+            submitted_via="mcp", dry_run=is_dry, raw_response=rd.reason,
+            asset_class="option", contract_symbol=choice.occ_symbol,
+            underlying=strat.symbol, strike=choice.strike, expiry=choice.expiry,
+            premium=choice.premium, selection_reason=choice.reason,
+        )
+        outcome.order_status = "blocked"
+        outcome.order_blocked_reason = rd.reason
+        return _ExecCounts(blocked=1)
+
+    # A marketable limit at the ask: options market orders are rejected outside
+    # market hours, and the demo must run at any hour (CLAUDE.md). Premium at
+    # risk (ask * 100) is then a true ceiling on the cost.
+    res = mcp_client.submit_option_order(
+        choice.occ_symbol, qty=qty, side="buy", limit_price=choice.ask, dry_run=dry_run,
+    )
+    db.insert_order(
+        conn, strategy_id=sid, run_id=run_id, symbol=choice.occ_symbol,
+        qty=res.qty, side="buy", status=res.status,
+        broker_order_id=res.broker_order_id, submitted_via="mcp",
+        dry_run=is_dry, raw_response=res.raw or (res.error or ""),
+        asset_class="option", contract_symbol=choice.occ_symbol,
+        underlying=strat.symbol, strike=choice.strike, expiry=choice.expiry,
+        premium=choice.premium, selection_reason=choice.reason,
+    )
+    outcome.order_status = res.status
+    outcome.broker_order_id = res.broker_order_id
+    return _ExecCounts(submitted=1 if (res.ok and res.status != "dry_run") else 0)
 
 
 def run_cycle(
@@ -130,7 +252,7 @@ def run_cycle(
         start = end - timedelta(days=lookback_days)
 
         outcomes: list[StrategyOutcome] = []
-        n_promoted = n_rejected = n_orders = n_blocked = 0
+        n_promoted = n_rejected = n_orders = n_blocked = n_skipped = 0
 
         for strat, sid in zip(strategies, strategy_ids):
             bars = data.get_bars(strat.symbol, start, end)
@@ -178,34 +300,19 @@ def run_cycle(
             n_promoted += 1
             log.info("PROMOTED %s — %s", strat.name, gr.reason)
 
-            # ---- risk checks before ANY order (T3.3) ----
-            rd = risk.check(conn, notional=order_notional, dry_run=dry_run)
-            if not rd.allowed:
-                db.insert_order(
-                    conn, strategy_id=sid, run_id=run_id, symbol=strat.symbol,
-                    qty=None, side="buy", status="blocked", broker_order_id=None,
-                    submitted_via="mcp", dry_run=is_dry, raw_response=rd.reason,
+            if EXPRESSION == "options":
+                counts = _execute_via_option(
+                    conn, run_id, strat, sid, bars, outcome,
+                    dry_run=dry_run, is_dry=is_dry,
                 )
-                n_blocked += 1
-                outcome.order_status = "blocked"
-                outcome.order_blocked_reason = rd.reason
-                outcomes.append(outcome)
-                continue
-
-            # ---- order via the Alpaca MCP server (T3.2 / D7) ----
-            res = mcp_client.submit_market_order(
-                strat.symbol, notional=order_notional, side="buy", dry_run=dry_run,
-            )
-            db.insert_order(
-                conn, strategy_id=sid, run_id=run_id, symbol=strat.symbol,
-                qty=res.qty, side="buy", status=res.status,
-                broker_order_id=res.broker_order_id, submitted_via="mcp",
-                dry_run=is_dry, raw_response=res.raw or (res.error or ""),
-            )
-            if res.ok and res.status != "dry_run":
-                n_orders += 1
-            outcome.order_status = res.status
-            outcome.broker_order_id = res.broker_order_id
+            else:
+                counts = _execute_via_equity(
+                    conn, run_id, strat, sid, outcome,
+                    order_notional=order_notional, dry_run=dry_run, is_dry=is_dry,
+                )
+            n_orders += counts.submitted
+            n_blocked += counts.blocked
+            n_skipped += counts.skipped
             outcomes.append(outcome)
 
         db.finish_run(conn, run_id, n_generated=len(strategies),
@@ -215,7 +322,8 @@ def run_cycle(
         return CycleResult(
             run_id=run_id, n_generated=len(strategies), n_promoted=n_promoted,
             n_rejected=n_rejected, n_orders_submitted=n_orders,
-            n_orders_blocked=n_blocked, dry_run=is_dry, outcomes=outcomes,
+            n_orders_blocked=n_blocked, n_orders_skipped=n_skipped,
+            dry_run=is_dry, outcomes=outcomes,
         )
     finally:
         if own_conn:

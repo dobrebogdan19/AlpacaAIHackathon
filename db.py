@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS postmortems (
     created_at            TEXT NOT NULL
 );
 
+-- Phase 4 extension: a proposed gate recalibration derived from forward evidence
+-- (calibrate.py). Stored, surfaced, and NEVER auto-applied — the whole record,
+-- including the honest holdout verdict, lives in ``record_json``. ``applied`` is
+-- a human-set marker, not something the system flips itself.
+CREATE TABLE IF NOT EXISTS calibrations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER REFERENCES runs (id),
+    as_of       TEXT,
+    record_json TEXT NOT NULL,
+    applied     INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_id INTEGER NOT NULL REFERENCES strategies (id),
@@ -125,6 +138,22 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS ix_orders_strategy ON orders (strategy_id);
 
+-- T5.3: one row per scheduler tick, whether or not it traded. This is the
+-- honest record that the agent was running (not just that it acted) and, on a
+-- free-tier cold start, how long it was asleep. Plain CREATE IF NOT EXISTS — a
+-- new table, no migration (cf. orders / calibrations).
+CREATE TABLE IF NOT EXISTS scheduler_ticks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick_at     TEXT NOT NULL,
+    market_open INTEGER NOT NULL DEFAULT 0,
+    action      TEXT NOT NULL,   -- startup | skipped-market-closed | manage-only
+                                 -- | entry-cycle | error
+    detail      TEXT,
+    run_id      INTEGER REFERENCES runs (id),
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_scheduler_ticks_action ON scheduler_ticks (action);
+
 -- Phase 3 (T3.3): a DB-backed kill switch (the env var is the other way in).
 CREATE TABLE IF NOT EXISTS system_state (
     key        TEXT PRIMARY KEY,
@@ -142,10 +171,22 @@ CREATE TABLE IF NOT EXISTS system_state (
 #                     promotion basis) or 'forward' (shadow tracked forward, D34)
 #   backtests.as_of — the as-of date a forward/insample split was taken at
 #   runs.as_of      — set when a run is an as-of forward-tracking simulation
+#
+# Phase 9 (D48): the agent now expresses a promoted signal as an option contract,
+# not shares. The ``orders`` row records the contract it chose and why. Same
+# guarded-``ALTER`` pattern; ``asset_class`` defaults to 'equity' so every
+# pre-existing row (and the committed seed) stays correct.
 _MIGRATIONS: list[tuple[str, str, str]] = [
     ("backtests", "kind", "ALTER TABLE backtests ADD COLUMN kind TEXT NOT NULL DEFAULT 'primary'"),
     ("backtests", "as_of", "ALTER TABLE backtests ADD COLUMN as_of TEXT"),
     ("runs", "as_of", "ALTER TABLE runs ADD COLUMN as_of TEXT"),
+    ("orders", "asset_class", "ALTER TABLE orders ADD COLUMN asset_class TEXT NOT NULL DEFAULT 'equity'"),
+    ("orders", "contract_symbol", "ALTER TABLE orders ADD COLUMN contract_symbol TEXT"),
+    ("orders", "underlying", "ALTER TABLE orders ADD COLUMN underlying TEXT"),
+    ("orders", "strike", "ALTER TABLE orders ADD COLUMN strike REAL"),
+    ("orders", "expiry", "ALTER TABLE orders ADD COLUMN expiry TEXT"),
+    ("orders", "premium", "ALTER TABLE orders ADD COLUMN premium REAL"),
+    ("orders", "selection_reason", "ALTER TABLE orders ADD COLUMN selection_reason TEXT"),
 ]
 
 
@@ -371,6 +412,76 @@ def list_postmortems(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM postmortems ORDER BY id").fetchall()
 
 
+# --- calibrations (Phase 4 extension / calibrate.py) -----------------------
+
+
+def insert_calibration(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int | None,
+    as_of: str | None,
+    record_json: str,
+    applied: bool = False,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO calibrations (run_id, as_of, record_json, applied, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (run_id, as_of, record_json, 1 if applied else 0, _now()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def latest_calibration(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM calibrations ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def list_calibrations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM calibrations ORDER BY id").fetchall()
+
+
+# --- scheduler ticks (T5.3) ------------------------------------------------
+
+
+def insert_scheduler_tick(
+    conn: sqlite3.Connection,
+    *,
+    market_open: bool,
+    action: str,
+    detail: str | None = None,
+    run_id: int | None = None,
+) -> int:
+    cur = conn.execute(
+        """INSERT INTO scheduler_ticks (tick_at, market_open, action, detail, run_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (_now(), 1 if market_open else 0, action, detail, run_id, _now()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_scheduler_ticks(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM scheduler_ticks ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+
+
+def last_scheduler_tick(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM scheduler_ticks ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def last_entry_cycle_at(conn: sqlite3.Connection) -> str | None:
+    """ISO timestamp of the most recent tick that ran a full entry cycle, or None."""
+    row = conn.execute(
+        "SELECT tick_at FROM scheduler_ticks WHERE action = 'entry-cycle' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return None if row is None else str(row["tick_at"])
+
+
 # --- orders -----------------------------------------------------------------
 
 
@@ -387,14 +498,31 @@ def insert_order(
     submitted_via: str = "mcp",
     dry_run: bool = False,
     raw_response: str | None = None,
+    asset_class: str = "equity",
+    contract_symbol: str | None = None,
+    underlying: str | None = None,
+    strike: float | None = None,
+    expiry: str | None = None,
+    premium: float | None = None,
+    selection_reason: str | None = None,
 ) -> int:
+    """Insert one order row.
+
+    For the option expression path (D48) pass ``asset_class='option'`` and the
+    contract fields: ``contract_symbol`` (OCC), ``underlying``, ``strike``,
+    ``expiry``, ``premium`` (cash to open one contract), and ``selection_reason``
+    (why ``options.select_contract`` picked it — or why none was chosen, for a
+    ``status='skipped'`` row).
+    """
     cur = conn.execute(
         """INSERT INTO orders
                (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
-                submitted_via, dry_run, raw_response, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                submitted_via, dry_run, raw_response, asset_class, contract_symbol,
+                underlying, strike, expiry, premium, selection_reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (strategy_id, run_id, broker_order_id, symbol, qty, side, status,
-         submitted_via, 1 if dry_run else 0, raw_response, _now()),
+         submitted_via, 1 if dry_run else 0, raw_response, asset_class, contract_symbol,
+         underlying, strike, expiry, premium, selection_reason, _now()),
     )
     conn.commit()
     return int(cur.lastrowid)

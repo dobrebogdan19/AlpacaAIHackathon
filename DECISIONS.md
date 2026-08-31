@@ -638,3 +638,368 @@ shadow to also clear the *full* promotion gate forward (too strict — the point
 that a rejected candidate did better, not that it was secretly great); searching
 seeds/dates for one that yields a retirement under the strict rule (D35 — the
 exact bias this project exists to measure).
+
+
+### D46 — `calibrate.py`: the gate proposes new thresholds from forward evidence; it never applies them
+
+The regret ledger measures that the gate rejected the two biggest forward
+winners (D45) and did nothing with it. `calibrate.py` closes that loop: it reads
+every as-of decision of the latest regret run straight from storage (the stored
+`insample` metrics = what the gate saw, the stored `forward` metrics = what
+happened — no bars fetched, no backtest re-run), and grid-searches the three
+`gate.py` thresholds for the combination that would have maximised the mean
+forward return of the promoted set.
+
+Design choices a reviewer might question:
+
+* **Deterministic search.** `GRID` is three explicit ordered lists
+  (`min_total_return_pct` 0–30 by 5, `max_drawdown_pct` 10–50, `min_trades`
+  0–20); the nested loop keeps the first combination that *strictly* beats the
+  best so far, so the result never depends on dict/set ordering. Exhaustive
+  (~440 combos), no randomness, no early stop.
+* **`MIN_PROMOTED = 5`.** A promoted set smaller than this makes the mean one or
+  two strategies' luck — the same noise argument that puts `min_trades` at 10.
+  Fixed up front; the holdout verdict is identical for 3 or 8 (checked).
+* **Holdout.** Candidates are sorted by strategy id and every 3rd is held out
+  (`HOLDOUT_EVERY = 3`, ~⅓). Calibrate on the other ⅔, then score BOTH the
+  current and the train-calibrated thresholds on the held-out candidates — one
+  number that is not fitted. The record reports the train improvement, the
+  holdout improvement, and `improvement_survival_fraction` = holdout ÷ train.
+* **Verdict, not just a number.** `no-improvement` (search beat nothing —
+  `proposed` is reported as the *current* thresholds unchanged, not an arbitrary
+  grid corner), `does-not-survive-holdout` (fitted gain reverses or barely
+  survives out of sample — the D10 case), or `survives-holdout` (partial
+  survival; still "candidate change, human must edit gate.py"). Every verdict
+  except a genuine survival recommends keeping the current thresholds.
+* **Never auto-applied.** `gate.py` is untouched by this module. The proposal is
+  stored in a new `calibrations` table (plain `CREATE TABLE IF NOT EXISTS`, no
+  migration — like `orders`/`postmortems`) with the full record JSON, and
+  surfaced at `GET /api/calibration`. `applied` is a human-set marker. A system
+  that silently retunes itself on fitted data is the exact failure mode this
+  project exists to expose.
+
+*Rejected:* applying the winning thresholds to `gate.py` automatically (the
+whole point is that it must not); re-running the engine to get the forward
+returns (the ledger already stored them — reading storage keeps it deterministic
+and offline); a train/test split on time or symbol (interleaving by id keeps
+both sides representative of the one as-of run); reporting the best fitted
+combination with no holdout (that is the dishonest artefact the module exists to
+refuse).
+
+
+### D47 — On the frozen seed, the calibration does not survive the holdout (kept as-is)
+
+`python calibrate.py --db-path seed.db` on the committed seed (regret run 5, as
+of 2026-06-17, 74 candidates), run once, not searched:
+
+* **Current gate:** promotes 8, mean forward return **+4.46%**.
+* **Full-sample fit:** `min_total_return_pct` 0 → 10, `max_drawdown_pct` 25 → 15,
+  `min_trades` unchanged. Promotes 5, mean forward **+8.66%** — a **+4.21pp**
+  in-sample gain.
+* **Holdout:** calibrated on 49 train candidates (→ 10 / 15 / 6), scored on 25
+  held-out. Train improvement **+7.89pp**; holdout improvement **−0.30pp**.
+  `improvement_survival_fraction ≈ −0.04` — the gain does not just shrink, it
+  **reverses**.
+* **Verdict:** `does-not-survive-holdout`. Recommendation: keep the current
+  thresholds.
+
+This is the correct and interesting result (D10): the tighter thresholds look
+better only because they were fitted to the same forward returns they are scored
+on; on candidates they were not fitted to, they are no better than the gate we
+have. The calibration row is persisted into the committed `seed.db` (so the
+deployed `/api/calibration` shows it) — this is a stored proposal record, not a
+re-seed or an LLM re-roll, and `gate.py` is unchanged. The seed was not
+regenerated and the grid/holdout parameters were not tuned to produce a nicer
+verdict.
+
+*Rejected:* presenting the +4.21pp full-sample number as "better thresholds"
+(dishonest — it is in-sample optimism); widening the grid or changing the
+holdout fraction until something survived (D35 — that is the selection bias this
+project measures).
+
+
+### D48 — Options are the *expression*; the signal still comes from the underlying
+
+The hackathon requires strategies to incorporate options trading. We traded
+equities only. Rather than rebuild the strategy grammar, the backtest, and the
+gate around option contracts, the change is scoped to a single seam:
+
+* **Signal — unchanged.** `engine.py` still evaluates every strategy on the
+  underlying equity's daily bars. A promotion is still a statement about the
+  underlying. The grammar, the gate thresholds, the regret ledger, the
+  selection-bias number and the retirement rule are all untouched.
+* **Expression — new.** When a promoted strategy fires, `cycle.py` no longer
+  buys shares. `options.select_contract` picks a single-leg long **call** on
+  that underlying and `mcp_client.submit_option_order` executes it through the
+  Alpaca MCP server (D7 — MCP stays the order path). `EXPRESSION = "options"` in
+  `cycle.py` is the default; `"equity"` restores the old share path in one line
+  and both are tested.
+
+**We do not backtest option prices.** Alpaca's options history is short and
+modelling premium decay / IV would cost days we do not have. The backtest speaks
+only in the underlying; the contract is chosen live at execution time. This is
+stated the same way in the README.
+
+**Selection is by moneyness, not delta.** `options.SELECTION_RULES` (one dict, like
+`gate.py`): `contract_type=call`, `dte_min/max = 30/45`, `target_moneyness = 1.03`
+(≈3% OTM — a directional bullish expression with convexity and defined risk),
+`moneyness_tolerance = 0.08`, `require_two_sided_quote = True`,
+`max_quote_spread_pct = 60`. The free / paper options feed carries **no Greeks or
+IV on many underlyings** (SPY has them, AAPL did not — it is inconsistent) and
+`open_interest` is always null, so a delta target and an OI floor are not
+dependable. Moneyness (strike vs. the underlying's last close) is always
+computable and fully explainable. Tradeability is proxied by "a two-sided quote
+exists". The contract, the spot, the moneyness, the DTE and the premium are all
+written into the `orders` row's `selection_reason` — this project logs its
+reasoning everywhere and options are no exception. No suitable contract is
+recorded as an `orders` row with `status='skipped'` and the reason; it never
+crashes the cycle.
+
+**Limit orders, not market.** Alpaca rejects options *market* orders outside
+market hours (HTTP 422, code 42210000), and the demo must work at any hour
+(CLAUDE.md). Every option order is a **limit at the contract's ask** — marketable
+when the market opens, and it makes premium-at-risk (`ask * 100`) a true ceiling.
+
+**Risk (`risk.check_option`).** Two option-specific ceilings alongside the
+existing kill switch / concurrent-position checks: `MAX_OPTION_CONTRACTS_PER_POSITION
+= 5` and `MAX_TOTAL_OPTION_PREMIUM_AT_RISK = $2,500` (summed over live BUY option
+orders — a long option can expire worthless, so the premium paid is the whole
+risk). `FIXED_OPTION_CONTRACTS = 1` per position (fixed size, like the fixed
+notional). Kill switch and `DRY_RUN` apply unchanged.
+
+**Persistence.** `orders` gains `asset_class` ('equity' default so every existing
+row and the committed seed stay correct), `contract_symbol`, `underlying`,
+`strike`, `expiry`, `premium`, `selection_reason` — guarded `ALTER`s in
+`_apply_migrations` (the D22 / D39 pattern). `status='skipped'` needs no DDL
+(the column has no CHECK).
+
+**Confirmed before building:** the MCP server exposes `place_option_order`
+(single- and multi-leg), `get_option_chain`, `get_option_contracts`,
+`get_option_snapshot`, `close_position` (works on an OCC symbol) — all advertised
+by default. The paper account is `options_trading_level: 3` (spreads allowed, no
+approval flow) with `options_buying_power` ~$98.5k. `scripts/check_options.py`
+placed a real 1-contract paper limit order (`AAPL261002C00330000`, id
+`7f5cac80-…`, accepted, then cancelled) through the MCP path.
+
+*Rejected:* rebuilding the grammar / backtest around options (weeks, not days —
+and the interesting part of this project is the self-audit, not option
+modelling); backtesting option prices on Alpaca's short history (would produce
+exactly the kind of subtly-wrong result CLAUDE.md forbids); a delta target (not
+available on the feed); market orders (rejected out of hours); defined-risk
+verticals now (deferred — single-leg long calls first, per the task; the MCP
+`place_option_order` `legs=` path is ready when it is time); replacing the equity
+path outright (kept as a one-line toggle so the Phase 3 demo and its seed lineage
+still run).
+
+
+### D49 — Autonomous scheduler: 10-minute tick, entry cycle at most every 3 hours
+
+The hackathon's first judging criterion is realised paper-account P&L, judged
+over roughly four trading days (Mon 31 Aug – Thu 3 Sep 2026), and the agent must
+run without a human clicking anything. `scheduler.py` is a daemon thread started
+from `api.py`'s lifespan when `SCHEDULER_ENABLED` is truthy (unset locally and in
+tests, so importing `api` never spawns a thread or touches MCP).
+
+Cadence, and why:
+
+* **Tick every `SCHEDULER_TICK_S` = 600 s (10 min).** Each tick asks the Alpaca
+  MCP server `get_clock`; if the market is closed it logs the tick and stops.
+* **Position-management sweep every tick.** Option P&L and DTE move intraday, and
+  "an agent that only buys is not managing anything" — so the exit path
+  (`mgmt.py`, D51) runs at the full tick cadence, not the entry cadence.
+* **Full entry cycle at most every `SCHEDULER_ENTRY_INTERVAL_MIN` = 180 min.**
+  The strategies are evaluated on **daily** bars, which only carry new
+  information once per day (at the close). Re-running generate→gate intraday
+  mostly re-judges the same bar. Two entry cycles per trading day covers the
+  fresh daily bar plus one retry against a transient LLM/MCP failure, without
+  spending the OpenAI budget or over-trading the paper account. ~2 entry cycles
+  and ~39 sweeps per trading day.
+
+**Free-tier sleep is handled honestly, not hidden.** Render's free instance
+spins down after ~15 min with no inbound HTTP and a background thread is not
+traffic, so the scheduler *will* stop when the instance sleeps. Mitigation: an
+external uptime pinger on `/api/health` every ~10 min during market hours
+(documented in `render.yaml` and the README). Whether or not that keeps it warm,
+the first tick after any restart writes a `startup` row in the new
+`scheduler_ticks` table recording the gap since the last tick — the record shows
+real, possibly-interrupted operation rather than claiming a 24/7 loop. **Every**
+tick writes a row (`skipped-market-closed` / `manage-only` / `entry-cycle` /
+`error` / `startup`), so the log shows the agent running, not only when it
+traded. Served read-only at `GET /api/scheduler`.
+
+**Startup reconciliation.** On start the scheduler runs `reconcile.reconcile_orders`
+(MCP `get_all_positions` + `get_orders`): any local `orders` row that still looks
+open but is not backed by a live broker position/order is marked
+`reconciled-closed` (a terminal status). Without this, a cold start that re-seeds
+the DB from `/tmp` would carry stale rows that saturate `MAX_CONCURRENT_POSITIONS`
+and block every new trade. A broker read failure changes nothing and is logged —
+a stuck cap is safer than trading on a wrong picture of what we hold.
+
+**The competition instance starts from an empty database** (`SKIP_SEED_BOOTSTRAP=1`)
+against the fresh dedicated hackathon paper account, so there is no seed history
+to reconcile away and the P&L judges see is entirely the agent's own. The
+existing demo instance (with the committed `seed.db` and the Phase-4 analysis)
+is unaffected — it just does not set `SCHEDULER_ENABLED`.
+
+*Rejected:* a cron/APScheduler job (Render cron is a paid feature; an in-process
+thread is simpler and needs no new dependency); entry cycles every tick (10 min
+— pointless on daily bars, and burns the OpenAI key); a 90-minute entry interval
+(~4/day — more visible activity but no more information, more paper orders);
+pretending continuous operation and not logging the gap (dishonest — CLAUDE.md).
+
+
+### D50 — Gate `min_trades` loosened 10 → 3 for the four-day live window (env, not a rewrite)
+
+`gate.GATE_THRESHOLDS` is calibrated for judging a strategy over ~250 daily bars:
+3 realised round-trips in a year is noise, so `min_trades` sits at 10 (D21). That
+is the right number for the regret-ledger analysis and it stays the default —
+`GATE_THRESHOLDS`, `calibrate.py`'s `current`, and the committed seed all still
+read it, so D21/D44–D47 remain valid.
+
+For the hackathon the constraint is different: the agent has ~four trading days
+to open positions and produce P&L, and demanding 10 backtest trades filters out
+exactly the medium-frequency strategies that could plausibly trade inside that
+window. `gate.active_thresholds()` overlays three env vars
+(`GATE_MIN_TRADES` / `GATE_MIN_TOTAL_RETURN_PCT` / `GATE_MAX_DRAWDOWN_PCT`) on the
+strict dict; `evaluate()` uses it when no explicit thresholds are passed. The
+competition instance sets **`GATE_MIN_TRADES=3` and nothing else** — 3 is the
+Phase-1 floor, still requiring demonstrated repeat trading, not a single lucky
+fire.
+
+`min_total_return_pct` (0) and `max_drawdown_pct` (25) are **not** touched: they
+are quality/risk controls on the backtest, and loosening them to chase returns is
+explicitly out of bounds. The env hooks exist only so all three knobs stay in
+one configurable place.
+
+This is a stated tradeoff, not a hidden one: it goes in the write-up and the deck
+as "we widened the gate for a short live window, here are the original values and
+why they were right for a year of bars."
+
+*Rejected:* editing `GATE_THRESHOLDS` in place (breaks the seed analysis and D21's
+story); lowering `min_total_return`/`max_drawdown` too (chasing returns —
+forbidden); a shorter backtest window instead (changes what every earlier number
+means); tuning the value by running until the output looked good (D35 — the exact
+bias this project measures; 3 was chosen up front as the pre-D21 floor).
+
+
+### D51 — Option exit rules: +60% profit target / −50% stop / 7-DTE floor, one dict, closed via MCP
+
+`mgmt.run_management_sweep` reads the real open positions from the Alpaca MCP
+server every scheduler tick, prices each option leg from the position's own
+`unrealized_plpc`, and closes the ones that hit a rule through MCP
+`close_position` (same sponsor path as entries). `EXIT_RULES` is one dict, like
+`gate.py` / `options.SELECTION_RULES`:
+
+* **`profit_target_pct = 60`** — a long call is convex but decays; giving a solid
+  gain back to theta is the common way these lose. +60% on the premium paid on a
+  ~3% OTM 30–45 DTE call is a meaningful win to bank.
+* **`stop_loss_pct = 50`** — max loss on a long call is 100% of premium; half of
+  that is a natural line that still leaves room for ordinary noise.
+* **`max_dte_to_hold = 7`** — inside a week, gamma/theta dominate and the
+  underlying-signal thesis is out of time. Close (regardless of P&L) and let a
+  fresh cycle re-enter at full DTE if the signal still holds. Also sidesteps
+  expiration/assignment handling.
+
+Every position looked at is logged (`held` / `closed` / `close-failed`), whether
+or not it is closed — the sweep summary rides in each `scheduler_ticks` row. A
+close inserts a `sell` `orders` row (`selection_reason` = the exit reason and the
+P&L that triggered it) and flips the original BUY row to `closed` so the risk
+caps (D52) stop counting it. The sweep never raises: a broker read failure comes
+back as `SweepResult(error=…)` and the tick is still logged.
+
+*Rejected:* trailing stops / partial scale-outs (more state, marginal on a
+4-day horizon); a separate quote fetch per contract (the position object already
+carries `unrealized_plpc`); a DTE floor low enough to ride into expiry week
+(gamma risk, and the thesis has expired); leaving exits to a human (an agent that
+only opens positions is not managing anything — the task).
+
+
+### D52 — A filled option BUY still counts against the risk caps until the contract is closed
+
+`risk.py` enforced `MAX_CONCURRENT_POSITIONS` and `MAX_TOTAL_OPTION_PREMIUM_AT_RISK`
+by counting `orders` rows whose status is *non-terminal*. But `filled` is
+terminal in that set — so once an option order filled, its premium stopped
+counting and the position no longer counted toward the concurrent ceiling. For a
+long option that is wrong: the premium is at risk, and the position is real,
+until the contract leaves the account.
+
+`risk._OPTION_CLOSED_STATUSES` is a separate, smaller set
+(`canceled`/`expired`/`rejected`/`dry_run`/`blocked`/`error`/`skipped`/
+`reconciled-closed`/`closed`). An option BUY row counts as an open position — for
+both the premium sum and the concurrent-position count — until it reaches one of
+those. The exit sweep sets `closed` (D51); the startup reconciliation sets
+`reconciled-closed` (D49); expiry/cancellation come from the broker status. The
+equity path is unchanged (a filled stock buy is still terminal, per the Phase-3
+tests) — this only tightens the option ceilings, which the task requires stay
+fully in force.
+
+*Rejected:* making `filled` non-terminal globally (would change Phase-3 equity
+semantics and break its tests); a separate `positions` table (the `orders` rows
+plus the sweep/reconcile already carry the lifecycle); raising
+`MAX_TOTAL_OPTION_PREMIUM_AT_RISK` so the leak did not matter (explicitly
+forbidden — do not raise the premium cap to chase returns).
+
+
+### D53 — Risk caps widened for the competition window (env, not a rewrite); supersedes the D52 note for this deployment
+
+D52 said "do not raise the premium cap to chase returns", in the context of a
+*leak* — a filled option that had stopped counting. That still stands: the leak
+is fixed and the caps are enforced. This entry is a different thing — a
+**deliberate, documented widening of the enforced ceilings for the four-day
+judged window**, decided the same way and for the same reason as the D50 gate
+change.
+
+**Why.** `risk.py`'s caps (`MAX_CONCURRENT_POSITIONS = 3`,
+`MAX_TOTAL_OPTION_PREMIUM_AT_RISK = $2,500`) were set in Phase 3 (D24) for an
+equity project whose deliverable was a self-auditing decision loop with **no P&L
+criterion**. The hackathon's *first* judging criterion is realised paper-account
+P&L, judged by inspecting the account directly over ~four trading days. A cap
+that idles the agent after three positions — on a $100k account, with a
+concurrent-position ceiling built when the fixed notional was $1,000 — measures
+nothing a judge is looking at. Three positions is not a risk posture for this
+context; it is an accident of a different one.
+
+**What moves (competition instance only):**
+
+| cap | strict default (risk.py) | competition (render.yaml) | why |
+|---|---|---|---|
+| `MAX_CONCURRENT_POSITIONS` | 3 | **8** | enough breadth that the account shows an actual book |
+| `MAX_TOTAL_OPTION_PREMIUM_AT_RISK` | $2,500 | **$8,000** | ~8% of a $100k account is the total long-option loss ceiling |
+| `MAX_OPTION_CONTRACTS_PER_POSITION` | 5 | **5 (unchanged)** | per-position size is not the thing being loosened |
+
+**What does not move:** the global kill switch (env + DB), `MAX_NOTIONAL_PER_POSITION`
+= $2,000 on the equity path, `FIXED_OPTION_CONTRACTS` = 1, and the D52 rule that a
+filled long option keeps counting until the contract leaves the account. 8
+positions × ≤5 contracts is still bounded by the $8,000 premium sum, so a single
+bad day cannot lose more than ~8% of the account to premium decay.
+
+**Mechanism — identical to D50.** `risk.limit(name)` returns the module default
+unless the matching `RISK_*` env var is set to a number (`RISK_MAX_CONCURRENT_POSITIONS`,
+`RISK_MAX_OPTION_PREMIUM_AT_RISK`). `risk.py`'s constants are unchanged, so
+`seed.db`, the regret-ledger analysis, `calibrate.py` and all 158 tests still read
+the strict values; only the Render competition service overrides them. The
+existing demo instance (committed `seed.db`, Phase-4 analysis) is untouched — it
+sets none of these vars.
+
+**Breadth, not frequency, is the activity lever (companion change).** On daily
+bars a strategy's signal only changes once per day at the close; running the
+entry cycle more often mostly re-judges the same bar (D49). So activity comes
+from a *wider* candidate set, not a faster loop:
+`generator.DEFAULT_SYMBOLS` 8 → 24 (large caps + major ETFs with tight option
+markets: SPY QQQ IWM DIA / AAPL MSFT NVDA AMZN GOOGL META TSLA AMD AVGO NFLX /
+JPM BAC GS / WMT COST KO DIS XOM CVX UNH), `seeds.SEED_STRATEGIES` 4 → 8, and
+`SCHEDULER_CYCLE_N` 4 → 8 so the wider universe is actually sampled per cycle.
+The tick cadence (10 min) and entry interval (3 h) are unchanged.
+
+**This is a stated tradeoff, not a hidden one** — it goes in the write-up and the
+deck next to D50: "we widened the risk caps and the candidate universe for a
+four-day live window; here are the original values, why they were right for the
+Phase-3 project, and why they were wrong for a P&L-judged demo."
+
+*Rejected:* editing the constants in `risk.py` directly (breaks the seed lineage
+and the tests, same reason D50 kept `GATE_THRESHOLDS` intact); moving
+`MAX_NOTIONAL_PER_POSITION` or the per-position contract cap (position *size* is
+not the constraint being wrong here); raising the caps far enough to never bind
+(the point is a visible book with a real ceiling, not unlimited exposure);
+increasing the tick frequency instead of the universe (no new information on
+daily bars — D49).

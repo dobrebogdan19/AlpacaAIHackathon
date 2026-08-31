@@ -175,6 +175,20 @@ Runner: `cycle.run_cycle(...)` — one function, generate→backtest→gate→ex
       Small promoted sample, wide dispersion both ways, and the gate rejected the
       two biggest forward winners (both MSFT, +26–29%). Reported as-is (D10).
       See D44 / D45.
+- [x] **T4.6** Gate self-calibration — search the threshold space for the
+      combination that would have maximised promoted-set forward return, with a
+      holdout so at least one number is not fitted; propose, never auto-apply.
+      *Accept:* a structured record (current vs proposed vs holdout, threshold
+      moves) is persisted and served at `GET /api/calibration`; a run where
+      calibration does not help is reported as no-improvement.
+      `calibrate.py` (D46) reads regret run 5's stored in-sample + forward
+      metrics, grid-searches `gate.py`'s three thresholds deterministically,
+      holds out every 3rd candidate, and emits a verdict. On the committed seed
+      the +4.21pp in-sample gain **reverses** on the holdout →
+      `does-not-survive-holdout`, recommend keep current (D47). `gate.py`
+      unchanged. New `calibrations` table, `tests/test_calibrate.py` (6 tests:
+      deterministic split + search, no-improvement path, holdout-reversal path,
+      persistence, seed integration). 101 tests pass.
 
 ---
 
@@ -195,12 +209,32 @@ Built before Phase 4 — see D27 (a live URL is the non-negotiable deliverable).
       single-flighted + rate-limited to 1 / 60s (D28). Poll `GET /api/runs/{id}`
       (`finished_at` is the done signal). Verified against the seed sequence
       (`scripts/seed.py`) — market closed, orders queue.
-- [ ] **T5.3** Scheduler for periodic cycles, with the API still usable
+- [x] **T5.3** Scheduler for periodic cycles, with the API still usable
       if the scheduler is not running.
-      *Accept:* dashboard renders from stored data alone.
-      *Deferred:* the dashboard already renders from stored data with no
-      scheduler running (D6), and `POST /api/cycle` covers on-demand runs for
-      the demo. A cron/APScheduler loop is post-submission upside.
+      *Accept:* dashboard renders from stored data alone; the scheduler runs
+      cycles autonomously during market hours and logs every tick.
+      `scheduler.py` — a daemon thread started from `api.py`'s lifespan when
+      `SCHEDULER_ENABLED` is set (D49). 10-min tick: `get_clock` via MCP →
+      skip cleanly when closed; an option-position **exit sweep** every tick
+      (`mgmt.py`, D51: +60% target / −50% stop / 7-DTE floor, closed via MCP);
+      a full entry cycle at most every 3 h. Every tick writes a
+      `scheduler_ticks` row (`skipped-market-closed` / `manage-only` /
+      `entry-cycle` / `error` / `startup`); the first tick after a restart logs
+      the sleep gap honestly. `reconcile.py` syncs the `orders` table against
+      the paper account on startup so the risk caps reflect reality (D49).
+      `GET /api/scheduler` serves the config + tick log (pure SELECT, D6 — the
+      dashboard still renders with the scheduler off). Gate loosened for the
+      four-day live window via `GATE_MIN_TRADES=3` (D50); the option-premium and
+      concurrent-position caps are tightened for *held* positions (D52) and then
+      widened for the judged window via `RISK_MAX_CONCURRENT_POSITIONS=8` /
+      `RISK_MAX_OPTION_PREMIUM_AT_RISK=8000`, with the candidate universe
+      broadened (`DEFAULT_SYMBOLS` 8→24, seeds 4→8, `SCHEDULER_CYCLE_N` 4→8) so
+      breadth — not tick frequency — drives activity on daily bars (D53).
+      Strict defaults stay in `gate.py` / `risk.py` for the seed lineage.
+      `tests/test_scheduler.py` (8), `tests/test_mgmt.py` (9),
+      `tests/test_reconcile.py` (6), `tests/test_gate.py` +4,
+      `tests/test_risk.py` +3 (+4 for the D53 overrides), `tests/test_api.py` +1
+      — 162 tests pass, all offline.
 
 ---
 
@@ -255,6 +289,58 @@ SVG (D29). Served at `/` by `api.py`.
       `.env.example`, and an unsoftened limitations section (IEX not SIP, daily
       bars, as-of simulation not live results, selection-bias n=8 vs n=66, paper
       only, no learning per D9).
+
+---
+
+## Phase 9 — Options expression (hackathon eligibility)
+
+The hackathon requires strategies to incorporate options. The signal still comes
+from the underlying equity (backtest / gate unchanged); only the *expression*
+changes — a promoted strategy trades a call contract, not shares. See D48.
+No option prices are backtested (Alpaca's history is too short); the contract is
+chosen live by explicit rules.
+
+- [x] **T9.0** Confirm the MCP server exposes option order + chain tools, and the
+      paper account can use them.
+      *Accept:* a script fetches a chain and (optionally) places one contract.
+      `scripts/check_options.py` — MCP advertises `place_option_order`,
+      `get_option_chain`, `get_option_contracts`, `close_position` (OCC-aware) by
+      default; paper account is `options_trading_level: 3`. A real 1-contract
+      paper limit order (`AAPL261002C00330000`) was accepted through MCP and then
+      cancelled.
+- [x] **T9.1** `options.py` — contract selection by explicit rules in one config
+      dict (`SELECTION_RULES`): 30–45 DTE, ~3% OTM moneyness target (delta not
+      available on the free feed), two-sided-quote tradeability filter. Records
+      the reasoning for every pick; returns `NoContract(reason)` — never raises —
+      when nothing qualifies.
+      *Accept:* `tests/test_options.py` (11 tests) — moneyness ranking, DTE
+      window, one-sided-quote rejection, no-contract path, OCC parser, MCP-fetch
+      wiring. Offline (chain mocked).
+- [x] **T9.2** Execution through the Alpaca MCP server —
+      `mcp_client.submit_option_order` (single-leg long call, **limit at the ask**
+      because options market orders are rejected out of hours). `EXPRESSION`
+      toggle in `cycle.py` (`"options"` default, `"equity"` = the Phase 3 path).
+      *Accept:* `tests/test_mcp_client.py` option tests + `tests/test_cycle.py`
+      option-path tests (order placed, no-contract → `skipped`, premium cap →
+      `blocked`, dry-run) pass offline; a real dry-run cycle selects a live SPY
+      contract end to end.
+- [x] **T9.3** Risk controls for options — `risk.check_option`:
+      `MAX_OPTION_CONTRACTS_PER_POSITION = 5`, `MAX_TOTAL_OPTION_PREMIUM_AT_RISK =
+      $2,500` (premium paid = full risk of a long option), on top of the kill
+      switch and concurrent-position ceiling. `DRY_RUN` still applies.
+      *Accept:* `tests/test_risk.py` option tests (6) pass.
+- [x] **T9.4** Persist option orders in the `orders` table — `asset_class`,
+      `contract_symbol`, `underlying`, `strike`, `expiry`, `premium`,
+      `selection_reason` (guarded `ALTER`s, D48). `asset_class` defaults to
+      `'equity'` so the committed seed stays valid.
+      *Accept:* `tests/test_db.py` unchanged and green; option order rows carry
+      every contract field + the reason.
+- [ ] **T9.5** *(optional, deferred)* Defined-risk vertical spread via
+      `place_option_order`'s multi-leg `legs=` path — only after single-leg is
+      proven in a demo. Not required for eligibility.
+
+Runner unchanged (`cycle.run_cycle`); the option path is `_execute_via_option`,
+selected by `EXPRESSION`. 127 tests pass, all offline.
 
 ---
 
