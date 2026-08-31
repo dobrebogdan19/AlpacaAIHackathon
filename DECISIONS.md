@@ -1241,3 +1241,5 @@ clobber live rows -- restore-only-when-empty is the safe rule).
 **Scope note.** CLAUDE.md says no CI pipelines. This is not CI (it runs no tests,
 gates no merges) -- it is a data-persistence cron that happens to run on Actions
 because that is the free scheduler we already have. Explicitly requested.
+
+**Verified on the deployed instance 2026-08-31.** GET /api/db-snapshot returns a ~78 KB DB / ~3 KB gzip; the secret scan is clean (the script, plus a raw byte check that no .env value appears in the file). The snapshots branch was bootstrapped by hand once (no gh CLI locally); the workflow maintains it from there. A restart then loaded it -- scheduler_ticks came back with the pre-restart rows and startup logged "resumed after 181 min gap" instead of "first scheduler start" (a no-restore boot has exactly one tick). The runs == 0 gate means the first post-fix cycle's backtests and decisions persist from here; the equity chart fills once a cycle has run.
