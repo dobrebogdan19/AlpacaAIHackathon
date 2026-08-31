@@ -24,6 +24,20 @@ def _clear_env(monkeypatch):
     monkeypatch.delenv("KILL_SWITCH", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_order_history(monkeypatch):
+    """The sweep reads broker order history for holding age (D60); default it to
+    empty so the existing tests never touch the MCP path. Time-stop tests
+    override it."""
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders",
+                        lambda limit=100: [], raising=False)
+
+
+def _iso_days_ago(days: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 # --- evaluate_exit (pure) ------------------------------------------------
 
 
@@ -45,6 +59,39 @@ def test_dte_floor_closes_even_when_flat():
 def test_within_bounds_holds():
     close, why = mgmt.evaluate_exit(pnl_pct=10.0, dte=30)
     assert not close and why.startswith("hold")
+
+
+# --- evaluate_exit: the D60 time stop ---------------------------------------
+
+
+def test_time_stop_closes_past_n_days_when_no_other_rule_hit():
+    close, why = mgmt.evaluate_exit(pnl_pct=-12.0, dte=30, held_days=2.4)
+    assert close and "time stop" in why
+
+
+def test_time_stop_does_not_fire_before_n_days():
+    close, why = mgmt.evaluate_exit(pnl_pct=-12.0, dte=30, held_days=1.9)
+    assert not close and why.startswith("hold")
+
+
+def test_time_stop_does_not_fire_when_age_unknown():
+    close, why = mgmt.evaluate_exit(pnl_pct=-12.0, dte=30, held_days=None)
+    assert not close and why.startswith("hold")
+
+
+def test_profit_target_takes_precedence_over_time_stop():
+    close, why = mgmt.evaluate_exit(pnl_pct=75.0, dte=30, held_days=9.0)
+    assert close and "profit target" in why and "time stop" not in why
+
+
+def test_stop_loss_takes_precedence_over_time_stop():
+    close, why = mgmt.evaluate_exit(pnl_pct=-60.0, dte=30, held_days=9.0)
+    assert close and "stop" in why and "time stop" not in why
+
+
+def test_dte_floor_takes_precedence_over_time_stop():
+    close, why = mgmt.evaluate_exit(pnl_pct=2.0, dte=5, held_days=9.0)
+    assert close and "DTE" in why and "time stop" not in why
 
 
 # --- run_management_sweep ----------------------------------------------
@@ -127,3 +174,84 @@ def test_sweep_survives_a_broker_read_failure(conn, monkeypatch):
     res = mgmt.run_management_sweep(conn)
     assert res.error == "mcp down"
     assert res.evaluated == 0
+
+
+# --- run_management_sweep: the D60 time stop -------------------------------
+
+_OCC = "AAPL261016C00200000"
+
+
+def _closes_ok(occ, **k):
+    return mgmt.mcp_client.OrderResult(ok=True, status="accepted", broker_order_id="c1",
+                                       symbol=occ, side="sell", raw='{"id":"c1"}')
+
+
+def test_sweep_time_stop_closes_a_stale_position(conn, monkeypatch):
+    _seed_option_buy(conn, occ=_OCC)
+    monkeypatch.setattr(mgmt.mcp_client, "list_positions",
+                        lambda: [_pos(occ=_OCC, plpc=-0.15)])  # within +60/-50
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders",
+                        lambda limit=100: [{"symbol": _OCC, "side": "buy",
+                                            "status": "filled",
+                                            "filled_at": _iso_days_ago(3.0)}])
+    monkeypatch.setattr(mgmt.mcp_client, "close_position", _closes_ok)
+    res = mgmt.run_management_sweep(conn)
+    assert res.closed == 1 and res.held == 0
+    sell = [o for o in db.list_orders(conn) if o["side"] == "sell"][0]
+    assert "time stop" in sell["selection_reason"]
+
+
+def test_sweep_time_stop_holds_a_fresh_position(conn, monkeypatch):
+    _seed_option_buy(conn, occ=_OCC)
+    monkeypatch.setattr(mgmt.mcp_client, "list_positions",
+                        lambda: [_pos(occ=_OCC, plpc=-0.15)])
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders",
+                        lambda limit=100: [{"symbol": _OCC, "side": "buy",
+                                            "status": "filled",
+                                            "filled_at": _iso_days_ago(0.5)}])
+    monkeypatch.setattr(mgmt.mcp_client, "close_position", _closes_ok)
+    res = mgmt.run_management_sweep(conn)
+    assert res.held == 1 and res.closed == 0
+
+
+def test_sweep_time_stop_folds_multiple_fills_to_earliest(conn, monkeypatch):
+    _seed_option_buy(conn, occ=_OCC)
+    monkeypatch.setattr(mgmt.mcp_client, "list_positions",
+                        lambda: [_pos(occ=_OCC, plpc=-0.15, qty="2")])
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders",
+                        lambda limit=100: [
+                            {"symbol": _OCC, "side": "buy", "status": "filled",
+                             "filled_at": _iso_days_ago(0.1)},
+                            {"symbol": _OCC, "side": "buy", "status": "filled",
+                             "filled_at": _iso_days_ago(3.0)},
+                        ])
+    monkeypatch.setattr(mgmt.mcp_client, "close_position", _closes_ok)
+    res = mgmt.run_management_sweep(conn)
+    assert res.closed == 1
+
+
+def test_sweep_time_stop_skipped_when_no_broker_fill_time(conn, monkeypatch):
+    _seed_option_buy(conn, occ=_OCC)
+    monkeypatch.setattr(mgmt.mcp_client, "list_positions",
+                        lambda: [_pos(occ=_OCC, plpc=-0.15)])
+    # order history has no filled BUY for this contract
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders", lambda limit=100: [])
+    called = {"n": 0}
+    monkeypatch.setattr(mgmt.mcp_client, "close_position",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    res = mgmt.run_management_sweep(conn)
+    assert res.held == 1 and res.closed == 0 and called["n"] == 0
+
+
+def test_sweep_survives_an_order_history_read_failure(conn, monkeypatch):
+    _seed_option_buy(conn, occ=_OCC)
+    monkeypatch.setattr(mgmt.mcp_client, "list_positions",
+                        lambda: [_pos(occ=_OCC, plpc=-0.15)])
+
+    def boom(limit=100):
+        raise RuntimeError("orders endpoint down")
+    monkeypatch.setattr(mgmt.mcp_client, "list_recent_orders", boom)
+    monkeypatch.setattr(mgmt.mcp_client, "close_position", _closes_ok)
+    res = mgmt.run_management_sweep(conn)
+    # time stop disabled this pass; other rules still evaluated, position held
+    assert res.error is None and res.held == 1 and res.closed == 0

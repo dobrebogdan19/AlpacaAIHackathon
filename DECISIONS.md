@@ -1243,3 +1243,79 @@ gates no merges) -- it is a data-persistence cron that happens to run on Actions
 because that is the free scheduler we already have. Explicitly requested.
 
 **Verified on the deployed instance 2026-08-31.** GET /api/db-snapshot returns a ~78 KB DB / ~3 KB gzip; the secret scan is clean (the script, plus a raw byte check that no .env value appears in the file). The snapshots branch was bootstrapped by hand once (no gh CLI locally); the workflow maintains it from there. A restart then loaded it -- scheduler_ticks came back with the pre-restart rows and startup logged "resumed after 181 min gap" instead of "first scheduler start" (a no-restore boot has exactly one tick). The runs == 0 gate means the first post-fix cycle's backtests and decisions persist from here; the equity chart fills once a cycle has run.
+
+---
+
+### D60 -- Management sweep gains a hard time stop: close after 2 days if no other rule hit
+
+**The deadlock.** On 2026-08-31 the paper account held 9 open option positions
+against a concurrency cap of 8 (`RISK_MAX_CONCURRENT_POSITIONS`, D53). All 9 were
+long calls, all opened the same day within ~24 minutes, all underwater between
+-11% and -36%. None had hit the three `EXIT_RULES`: +60% profit target, -50% stop,
+or <=7 DTE (the contracts were 30-46 days out). So the sweep closed nothing, and
+`risk.py` correctly blocked every new entry (9 >= 8). The scheduler kept working
+-- the 18:26 cycle generated 16 candidates and promoted 4 -- but could not place a
+single order. The agent was frozen until one of the 9 positions happened to cross
+a threshold on its own, which could take days or expiry.
+
+**Root cause.** Three things together: (1) a single bad batch -- one entry path
+opened many *correlated* positions (index + mega-cap calls, all directional long)
+that move together and are therefore all underwater together; (2) a hard
+concurrency cap with no headroom once that batch fills every slot; (3) every exit
+rule being price- or expiry-contingent, so a batch that just sits mildly
+underwater satisfies none of them, indefinitely. Any one of the three alone is
+survivable; all three is a deadlock.
+
+**The fix.** A fourth entry in `EXIT_RULES` -- `max_calendar_days_to_hold` -- and
+the sweep machinery to evaluate it:
+- `run_management_sweep` reads the broker's order history once
+  (`mcp_client.list_recent_orders`) and folds it to the *earliest* `filled_at`
+  per OCC symbol (a contract built up over several fills keeps its first entry
+  time, not the latest).
+- `evaluate_exit` takes a `held_days` argument and a fourth branch, checked
+  **only after** profit-target / stop-loss / DTE -- those keep precedence, so a
+  position that is both stale and a winner closes on the profit reason.
+- Holding age comes from the broker, never a local `orders` row, per D58. A
+  `/tmp` wipe with a missed snapshot has `reconcile.backfill_positions`
+  reconstruct rows with `created_at = boot time`, which would reset every age to
+  zero; broker `filled_at` survives the wipe. Verified against the live account
+  that `list_recent_orders` returns option BUYs with populated `filled_at`.
+- If the age is unknown for a position -- no filled buy in history, unparseable
+  timestamp, or the order-history read itself failed -- the rule **does not
+  fire**: it is logged and skipped. A missing timestamp can never cause a close,
+  so a boot with degraded broker data cannot mass-liquidate.
+
+**N = 2 calendar days (48h since fill).** The entry interval is 3h and the thesis
+is a daily-bar signal on the underlying; if a long call is still flat-to-underwater
+two sessions after entry, the directional call has not worked and theta is now the
+dominant term. Short enough to break a deadlock inside a single demo day, long
+enough that an ordinary winner reaches +60% first. Not env-overridable -- this is a
+correctness backstop, not a tuning knob.
+
+**Known trade-off.** A time stop realizes losses that might have recovered: a long
+call down 20% on day 2 can still finish green by expiry, and closing it locks the
+loss and pays the spread. Accepted because the observed alternative is worse --
+total paralysis, the agent unable to act on any new evidence for days. The regret
+ledger (Phase 4) will show whether time-stopped positions tended to recover; if
+that signal is strong, N is the knob to revisit.
+
+**Mass close is safe.** All 9 current positions share an entry day, so the first
+sweep past 48h closes all 9 in one pass. Each close is an independent
+`mcp_client.close_position` call; a failure returns `OrderResult(ok=False)`,
+increments `failed`, is logged, and the loop continues. The local buy row is
+flipped to `closed` only for closes the broker accepted, so a partial failure
+just leaves those positions for the next tick (10 min) to retry -- no rollback, no
+all-or-nothing.
+
+*Rejected:* raising the concurrency cap (delays the next deadlock, raises
+exposure, does not fix the cause); a manual one-off close of the batch (recurs the
+next time a cycle opens a correlated batch); a correlation/diversification check
+at entry (the right long-term fix but a larger change to the entry path -- the
+time stop is the safety net regardless); age from the local `orders.created_at`
+(unreliable across a wipe, see above); date-boundary "calendar day" counting
+(timezone-fragile; elapsed-48h is unambiguous and matches how the other rules
+read).
+
+Scope: `mgmt.py` + `tests/test_mgmt.py` only. `risk.py`, the entry cycle, the
+scheduler, the MCP order path and the D58 reconciliation are untouched. One
+deploy.

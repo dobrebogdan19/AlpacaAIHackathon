@@ -216,7 +216,9 @@ Built before Phase 4 — see D27 (a live URL is the non-negotiable deliverable).
       `scheduler.py` — a daemon thread started from `api.py`'s lifespan when
       `SCHEDULER_ENABLED` is set (D49). 10-min tick: `get_clock` via MCP →
       skip cleanly when closed; an option-position **exit sweep** every tick
-      (`mgmt.py`, D51: +60% target / −50% stop / 7-DTE floor, closed via MCP);
+      (`mgmt.py`, D51: +60% target / −50% stop / 7-DTE floor, closed via MCP;
+      D60: + a 2-calendar-day time stop, holding age from the broker's
+      `filled_at`, skipped when that age is unknown);
       a full entry cycle at most every 3 h. Every tick writes a
       `scheduler_ticks` row (`skipped-market-closed` / `manage-only` /
       `entry-cycle` / `error` / `startup`); the first tick after a restart logs
@@ -231,7 +233,7 @@ Built before Phase 4 — see D27 (a live URL is the non-negotiable deliverable).
       broadened (`DEFAULT_SYMBOLS` 8→24, seeds 4→8, `SCHEDULER_CYCLE_N` 4→8) so
       breadth — not tick frequency — drives activity on daily bars (D53).
       Strict defaults stay in `gate.py` / `risk.py` for the seed lineage.
-      `tests/test_scheduler.py` (8), `tests/test_mgmt.py` (9),
+      `tests/test_scheduler.py` (8), `tests/test_mgmt.py` (9; +11 for the D60 time stop),
       `tests/test_reconcile.py` (6), `tests/test_gate.py` +4,
       `tests/test_risk.py` +3 (+4 for the D53 overrides), `tests/test_api.py` +1
       — 162 tests pass, all offline.
