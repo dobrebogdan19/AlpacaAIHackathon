@@ -44,13 +44,14 @@ services:
       # The scheduler runs generate->gate->execute a couple of times per trading
       # day and an option-position exit sweep every tick. See scheduler.py.
       #
-      # HALTED 2026-08-31 after the D58 incident: a /tmp DB wipe on redeploy made
-      # risk.py blind to open positions (it trusted local order rows) and made
-      # the scheduler re-run a full entry cycle it had already done. Do NOT set
-      # this back to "1" until a full restart of the deployed instance has been
-      # tested and risk.py is confirmed to see the broker's positions (D58).
+      # Halted 2026-08-31 after the D58 incident (a /tmp wipe made risk.py blind
+      # to open positions and made the scheduler re-run an entry cycle it had
+      # already done). Re-enabled the same day once BROKER_TRUTH was verified on
+      # the deployed instance: a restart reconstructed all 9 positions, a manual
+      # cycle blocked every promotion at "9 >= 8", and the probe confirmed
+      # entry_due:false from broker order history (no catch-up). See DECISIONS D58.
       - key: SCHEDULER_ENABLED
-        value: "0"
+        value: "1"
       # Fresh dedicated hackathon paper account: no seed history, reconcile
       # order/position state from the account on startup (reconcile.py).
       - key: SKIP_SEED_BOOTSTRAP
