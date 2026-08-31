@@ -22,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -49,6 +51,12 @@ def _bootstrap_db() -> None:
     """
     if not os.getenv("DB_PATH"):
         return
+    if os.getenv("SKIP_SEED_BOOTSTRAP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        # The competition instance trades a fresh dedicated paper account and
+        # starts from an empty database; the scheduler's startup reconciliation
+        # (reconcile.py) syncs order/position state from that account (D49).
+        log.info("SKIP_SEED_BOOTSTRAP set — starting with an empty database")
+        return
     target = db.DB_PATH
     if target.exists() and target.stat().st_size > 0:
         return
@@ -63,7 +71,30 @@ def _bootstrap_db() -> None:
 
 _bootstrap_db()
 
-app = FastAPI(title="Self-auditing trading agent", version="1.0")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    """Kick off the autonomous scheduler (T5.3) if SCHEDULER_ENABLED is set.
+
+    No-op locally and in tests (the var is unset), so importing ``api`` never
+    spawns a background thread or touches the MCP server on its own.
+    """
+    import scheduler
+
+    try:
+        scheduler.start()
+    except Exception:  # noqa: BLE001 — a scheduler failure must not stop the API
+        log.exception("scheduler failed to start — API still serving")
+    try:
+        yield
+    finally:
+        try:
+            scheduler.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+app = FastAPI(title="Self-auditing trading agent", version="1.0", lifespan=_lifespan)
 
 
 # --- helpers ----------------------------------------------------------------
@@ -437,6 +468,31 @@ def selection_bias():
         conn.close()
 
 
+@app.get("/api/calibration")
+def calibration():
+    """The latest gate recalibration proposal (calibrate.py).
+
+    A proposal derived by in-sample optimisation over forward returns, with a
+    holdout check that says how much of the gain survives. Stored, never
+    auto-applied — ``gate.py`` is unchanged whatever this says (D10).
+    """
+    conn = _conn()
+    try:
+        row = db.latest_calibration(conn)
+        if row is None:
+            return {"available": False,
+                    "note": "no calibration has been run yet"}
+        return {
+            "available": True,
+            "id": row["id"],
+            "applied": bool(row["applied"]),
+            "created_at": row["created_at"],
+            "record": _loads(row["record_json"]),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/retirements")
 def retirements():
     """Every retirement the regret ledger triggered, with its post-mortem."""
@@ -514,6 +570,31 @@ def trigger_cycle(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_run_cycle_bg, run_id)
     return JSONResponse({"run_id": run_id, "poll": f"/api/runs/{run_id}"}, status_code=202)
+
+
+@app.get("/api/scheduler")
+def scheduler_status():
+    """The autonomous scheduler's config and its recent tick log (T5.3).
+
+    Pure SELECT over ``scheduler_ticks`` plus the in-process config — rendering
+    this never needs the scheduler to be running (D6).
+    """
+    import scheduler
+
+    conn = _conn()
+    try:
+        ticks = _rows(conn,
+                      "SELECT * FROM scheduler_ticks ORDER BY id DESC LIMIT 100")
+        counts = _rows(conn,
+                       "SELECT action, COUNT(*) AS n FROM scheduler_ticks GROUP BY action")
+        return {
+            "config": scheduler.config(),
+            "last_entry_cycle_at": db.last_entry_cycle_at(conn),
+            "tick_counts": {r["action"]: r["n"] for r in counts},
+            "ticks": ticks,
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/api/mcp-check")

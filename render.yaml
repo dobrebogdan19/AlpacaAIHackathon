@@ -40,6 +40,45 @@ services:
         sync: false
       # DRY_RUN is intentionally unset — live paper orders through the MCP path.
 
+      # --- T5.3: autonomous operation for the hackathon window ----------------
+      # The scheduler runs generate->gate->execute a couple of times per trading
+      # day and an option-position exit sweep every tick. See scheduler.py.
+      - key: SCHEDULER_ENABLED
+        value: "1"
+      # Fresh dedicated hackathon paper account: no seed history, reconcile
+      # order/position state from the account on startup (reconcile.py).
+      - key: SKIP_SEED_BOOTSTRAP
+        value: "1"
+      # Gate recalibrated for a four-day live window (D50): only min_trades moves
+      # (10 -> 3). The strict default stays in gate.py for the historical seed.
+      - key: GATE_MIN_TRADES
+        value: "3"
+
+      # --- D53: risk caps widened for the competition window --------------------
+      # The strict caps in risk.py (3 positions / $2,500 option premium) were set
+      # in Phase 3 for an equity project with no P&L criterion. P&L is the
+      # hackathon's first judging criterion and judges inspect the account
+      # directly, so a cap that idles the agent after 3 positions is wrong for
+      # this context. 8 positions and $8,000 premium ~= 8% of a $100k account.
+      # Kill switch, the $2,000 notional ceiling and the 5-contracts-per-position
+      # cap are unchanged. Defaults stay in risk.py for the seed lineage / tests.
+      - key: RISK_MAX_CONCURRENT_POSITIONS
+        value: "8"
+      - key: RISK_MAX_OPTION_PREMIUM_AT_RISK
+        value: "8000"
+      # Breadth, not frequency, creates activity on daily bars (D53): a wider
+      # candidate batch per entry cycle so the wider symbol universe is actually
+      # sampled. 4 -> 8 LLM candidates (+ the hand-written seeds).
+      - key: SCHEDULER_CYCLE_N
+        value: "8"
+
+      # Optional overrides (defaults shown): SCHEDULER_TICK_S=600 (10 min),
+      # SCHEDULER_ENTRY_INTERVAL_MIN=180 (3 h).
+
+    # NOTE: point an external uptime pinger at /api/health every ~10 min during
+    # US market hours — the free instance sleeps after ~15 min idle and a
+    # background thread is not inbound traffic. Gaps are logged either way.
+
     # --- uncomment on a PAID instance for a real persistent database ----------
     # disk:
     #   name: data

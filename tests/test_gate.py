@@ -4,8 +4,16 @@ Acceptance: every candidate gets a written reason that names the specific
 threshold(s) it failed; the reason is never empty, promote or reject.
 """
 
+import pytest
+
 import gate
 from gate import GATE_THRESHOLDS, evaluate
+
+
+@pytest.fixture(autouse=True)
+def _clear_gate_env(monkeypatch):
+    for env in ("GATE_MIN_TRADES", "GATE_MIN_TOTAL_RETURN_PCT", "GATE_MAX_DRAWDOWN_PCT"):
+        monkeypatch.delenv(env, raising=False)
 
 
 def _metrics(total=5.0, dd=10.0, trades=12):
@@ -61,3 +69,31 @@ def test_custom_thresholds_are_honoured():
 def test_reason_is_written_for_both_outcomes():
     assert evaluate(_metrics()).reason.strip()
     assert evaluate(_metrics(trades=0)).reason.strip()
+
+
+# --- env-overridable active thresholds (D50) ------------------------------
+
+
+def test_active_thresholds_default_to_the_strict_dict():
+    assert gate.active_thresholds() == GATE_THRESHOLDS
+
+
+def test_gate_min_trades_env_loosens_only_min_trades(monkeypatch):
+    monkeypatch.setenv("GATE_MIN_TRADES", "3")
+    t = gate.active_thresholds()
+    assert t["min_trades"] == 3
+    assert t["min_total_return_pct"] == GATE_THRESHOLDS["min_total_return_pct"]
+    assert t["max_drawdown_pct"] == GATE_THRESHOLDS["max_drawdown_pct"]
+    # a 3-trade backtest that clears the other bars now promotes
+    assert evaluate(_metrics(total=3.84, dd=10.78, trades=3)).promoted is True
+
+
+def test_explicit_thresholds_still_win_over_env(monkeypatch):
+    monkeypatch.setenv("GATE_MIN_TRADES", "3")
+    strict = {"min_total_return_pct": 0.0, "max_drawdown_pct": 25.0, "min_trades": 10}
+    assert evaluate(_metrics(trades=3), strict).promoted is False
+
+
+def test_non_numeric_env_is_ignored(monkeypatch):
+    monkeypatch.setenv("GATE_MIN_TRADES", "lots")
+    assert gate.active_thresholds()["min_trades"] == GATE_THRESHOLDS["min_trades"]

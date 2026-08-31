@@ -44,7 +44,22 @@ log = logging.getLogger("generator")
 MODEL = "gpt-4o-mini"
 DEFAULT_N = 5
 MAX_RETRIES = 2
-DEFAULT_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "SPY", "TSLA"]
+# The universe the entry cycle draws from when no explicit symbols are passed.
+# Widened for the competition window (D53): with daily bars, running the cycle
+# more often re-judges the same bar — breadth is what produces new activity, not
+# frequency. All 24 are large caps or major ETFs with deep option history and
+# tight (penny/nickel-wide) option markets, so the option-expression layer (D48)
+# can nearly always find a contract that clears options.SELECTION_RULES.
+DEFAULT_SYMBOLS = [
+    # index / sector ETFs
+    "SPY", "QQQ", "IWM", "DIA",
+    # mega-cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "AVGO", "NFLX",
+    # financials
+    "JPM", "BAC", "GS",
+    # consumer / health / energy
+    "WMT", "COST", "KO", "DIS", "XOM", "CVX", "UNH",
+]
 
 _client = None
 

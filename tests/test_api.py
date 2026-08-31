@@ -91,6 +91,10 @@ def _seed(conn):
                          text="The retired strategy looked fine in-sample but lost forward.")
     db.finish_run(conn, r3, n_generated=2, n_promoted=1, n_rejected=1)
 
+    db.insert_calibration(conn, run_id=r3, as_of="2026-06-15",
+                          record_json=json.dumps({"verdict": "does-not-survive-holdout",
+                                                  "applied": False, "run_id": r3}))
+
 
 def test_health_reports_counts_and_no_network(client):
     h = client.get("/api/health").json()
@@ -172,6 +176,28 @@ def test_retirements_endpoint_carries_postmortem(client):
     assert rets[0]["promoted_name"] == "Slow AAPL"
     assert "lost forward" in rets[0]["text"]
     assert rets[0]["facts"]["symbol"] == "SPY"
+
+
+def test_scheduler_endpoint_reads_ticks_and_config(client, monkeypatch):
+    import db
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    conn = db.connect()
+    db.insert_scheduler_tick(conn, market_open=False, action="skipped-market-closed",
+                             detail="next open soon")
+    db.insert_scheduler_tick(conn, market_open=True, action="manage-only", detail="0 held")
+    conn.close()
+
+    body = client.get("/api/scheduler").json()
+    assert body["config"]["enabled"] is False
+    assert body["tick_counts"]["skipped-market-closed"] == 1
+    assert body["ticks"][0]["action"] == "manage-only"        # DESC
+
+
+def test_calibration_endpoint_returns_latest_record(client):
+    body = client.get("/api/calibration").json()
+    assert body["available"] is True
+    assert body["applied"] is False
+    assert body["record"]["verdict"] == "does-not-survive-holdout"
 
 
 def test_dashboard_served(client):

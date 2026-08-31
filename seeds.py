@@ -36,13 +36,20 @@ def _fast_cross(symbol: str, fast: int, slow: int) -> Strategy:
     )
 
 
-# A small spread of symbols and speeds. Some of these clear the gate on real
-# bars and some do not — which is the point of showing them.
+# A spread of liquid-options symbols and crossover speeds. Some clear the gate on
+# real bars and some do not — which is the point of showing them. Widened 4 -> 8
+# for the competition window (D53): breadth, not cycle frequency, is what puts new
+# positions on a daily-bar account, and every symbol here has a tight option
+# market for the expression layer (D48).
 SEED_STRATEGIES: list[Strategy] = [
     _fast_cross("SPY", 3, 7),
+    _fast_cross("QQQ", 4, 9),
     _fast_cross("AAPL", 2, 8),
     _fast_cross("MSFT", 5, 12),
     _fast_cross("NVDA", 4, 10),
+    _fast_cross("AMZN", 3, 11),
+    _fast_cross("AMD", 5, 15),
+    _fast_cross("META", 6, 13),
 ]
 
 
